@@ -1,11 +1,15 @@
 # kcp-memory
 
-**Episodic memory for Claude Code.** Indexes your session transcripts into a local SQLite database so you can search, list, and analyze everything Claude Code has ever done in your projects.
+**Episodic memory for Claude Code.** Indexes your session transcripts and tool-call events into a local SQLite database — searchable in milliseconds. Available as a CLI, an HTTP API, and an MCP server so Claude can query its own history inline.
 
-```
+```bash
+# CLI
 kcp-memory search "OAuth implementation"
-kcp-memory list --project /src/myapp
+kcp-memory events search "kubectl apply"
 kcp-memory stats
+
+# MCP — Claude queries directly during a session
+# (register once in ~/.claude/settings.json)
 ```
 
 Part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
@@ -20,7 +24,9 @@ Part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protoco
 | **Episodic** | What happened in past sessions | **kcp-memory** |
 | **Semantic** | What this codebase means | [Synthesis](https://github.com/exoreaction/synthesis) |
 
-kcp-memory fills the episodic layer. Without it, every session starts from zero. With it, you can ask "what was I doing in this project last week?" and get an answer in milliseconds.
+kcp-memory fills the episodic layer. Without it, every session starts from zero. With it,
+Claude can answer "what was I doing in this project last week?" and "which projects did I
+run `kubectl apply` in?" in milliseconds.
 
 ---
 
@@ -32,7 +38,7 @@ kcp-memory fills the episodic layer. Without it, every session starts from zero.
 curl -fsSL https://raw.githubusercontent.com/Cantara/kcp-memory/main/bin/install.sh | bash
 ```
 
-This downloads the JAR, starts the daemon on port 7735, and runs an initial scan.
+Downloads the JAR to `~/.kcp/`, starts the daemon on port 7735, and runs an initial scan of `~/.claude/projects/`.
 
 ### 2. Index your sessions
 
@@ -40,28 +46,32 @@ This downloads the JAR, starts the daemon on port 7735, and runs an initial scan
 kcp-memory scan
 ```
 
-Scans `~/.claude/projects/` and indexes all `.jsonl` session transcripts. Incremental by default — only new or changed files are re-indexed.
+Scans `~/.claude/projects/**/*.jsonl`. Incremental by default — only new or changed files re-indexed.
 
-### 3. Search
+### 3. Search session transcripts
 
 ```bash
 kcp-memory search "authentication refactor"
-kcp-memory search "how to deploy"
+kcp-memory search "database migration flyway"
 ```
 
-Uses SQLite FTS5 full-text search across all session content.
+### 4. Search tool-call events (v0.2.0)
 
-### 4. List recent sessions
+Requires [kcp-commands v0.9.0](https://github.com/Cantara/kcp-commands) to be writing `~/.kcp/events.jsonl`.
+
+```bash
+kcp-memory events search "kubectl apply"
+kcp-memory events search "mvn package"
+kcp-memory events search "docker build"
+```
+
+Returns every time Claude ran that command, with project directory, session ID, and timestamp.
+
+### 5. List and stats
 
 ```bash
 kcp-memory list
 kcp-memory list --project /src/myapp
-kcp-memory list --limit 5
-```
-
-### 5. Statistics
-
-```bash
 kcp-memory stats
 ```
 
@@ -76,57 +86,136 @@ kcp-memory stats
 
   Top tools:
     Read                      14,821
-    Bash                      9,442
-    Edit                      7,103
-    Glob                      3,218
-    Grep                      2,901
-    Write                     644
+    Bash                       9,442
+    Edit                       7,103
 ```
+
+### 6. Register as MCP server (v0.3.0)
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "kcp-memory": {
+      "command": "java",
+      "args": ["-jar", "/home/you/.kcp/kcp-memory-daemon.jar", "mcp"]
+    }
+  }
+}
+```
+
+Claude Code can now call `kcp_memory_search`, `kcp_memory_events_search`,
+`kcp_memory_list`, and `kcp_memory_stats` inline during any session — no manual CLI call,
+no context-switching.
 
 ---
 
 ## How it works
 
-Claude Code stores every session as a `.jsonl` file in `~/.claude/projects/<slug>/`. Each line is a JSON object representing one turn in the conversation.
+Claude Code stores every session as a `.jsonl` file in `~/.claude/projects/<slug>/`.
+kcp-commands v0.9.0 writes every Bash tool call to `~/.kcp/events.jsonl`.
 
 kcp-memory:
-1. **Scans** `~/.claude/projects/` for `.jsonl` files
-2. **Parses** each file: extracts session metadata, user messages, tool calls, and file paths
-3. **Indexes** into `~/.kcp/memory.db` (SQLite + FTS5)
-4. **Serves** a local HTTP API on port 7735 for fast queries
+1. **Scans** `~/.claude/projects/` for `.jsonl` session transcripts
+2. **Scans** `~/.kcp/events.jsonl` for tool-call events (incremental, byte-offset cursor)
+3. **Indexes** both into `~/.kcp/memory.db` (SQLite + FTS5)
+4. **Serves** an HTTP API on port 7735 and an MCP stdio server
 
-The daemon runs a background scan every 30 minutes. The PostToolUse hook (optional) triggers an async scan after every tool call.
+The daemon runs a background scan every 30 minutes. The PostToolUse hook triggers an
+async scan after every tool call (near-real-time). The MCP server runs an inline scan
+before every `kcp_memory_events_search` call.
+
+---
+
+## MCP server (v0.3.0)
+
+The MCP server exposes four tools over stdio (JSON-RPC 2.0):
+
+| Tool | What it answers |
+|------|----------------|
+| `kcp_memory_search` | "What did we do with OAuth last month?" — FTS5 over session transcripts |
+| `kcp_memory_events_search` | "Which projects did I run `kubectl apply` in?" — FTS5 over tool-call events |
+| `kcp_memory_list` | Recent sessions, optionally filtered by project directory |
+| `kcp_memory_stats` | Total sessions, turns, tool calls, date range, top tools |
+
+Registration (`~/.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "kcp-memory": {
+      "command": "java",
+      "args": ["-jar", "/home/you/.kcp/kcp-memory-daemon.jar", "mcp"]
+    }
+  }
+}
+```
+
+The MCP server opens its own database connection — it does not require the HTTP daemon to be running.
+
+---
+
+## Tool-call events (v0.2.0)
+
+Requires [kcp-commands v0.9.0](https://github.com/Cantara/kcp-commands) running as a
+PreToolUse hook. On every Bash tool call, kcp-commands appends a JSON event to
+`~/.kcp/events.jsonl`:
+
+```json
+{"ts":"2026-03-03T14:32:01Z","session_id":"abc123","project_dir":"/src/myapp","tool":"Bash","command":"kubectl apply -f deploy.yaml","manifest_key":"kubectl-apply"}
+```
+
+kcp-memory reads this file using a byte-offset cursor — each scan reads only the bytes
+appended since last time, typically one event in under 1ms.
+
+Search example:
+
+```
+$ kcp-memory events search "kubectl apply"
+
+[kcp-memory] 3 event(s) for "kubectl apply":
+
+  2026-03-03 14:32  /src/cantara/kcp-commands
+  abc12345  [kubectl-apply]
+  $ kubectl apply -f deploy.yaml
+
+  2026-02-28 11:17  /src/exoreaction/lib-pcb-app
+  def67890  [kubectl-apply]
+  $ kubectl apply -f k8s/production.yaml
+```
 
 ---
 
 ## Daemon API
 
-The daemon runs on `http://localhost:7735`:
+The HTTP daemon runs on `http://localhost:7735`:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Liveness check + session count |
-| `/search?q=<query>&limit=20` | GET | FTS5 full-text search |
+| `/health` | GET | Liveness check + session count + version |
+| `/search?q=<query>&limit=20` | GET | FTS5 search over session transcripts |
 | `/sessions?project=<dir>&limit=50` | GET | List recent sessions |
 | `/stats` | GET | Aggregate statistics |
-| `/scan?force=true` | POST | Trigger a scan (async) |
+| `/scan?force=true` | POST | Trigger an incremental scan (async) |
+| `/events/search?q=<query>&limit=20` | GET | FTS5 search over tool-call events *(v0.2.0)* |
 
 ```bash
 # Check health
 curl http://localhost:7735/health
 
-# Search
+# Search sessions
 curl "http://localhost:7735/search?q=OAuth+login&limit=5"
 
-# List sessions for a project
-curl "http://localhost:7735/sessions?project=/src/myapp"
+# Search events
+curl "http://localhost:7735/events/search?q=kubectl+apply"
 ```
 
 ---
 
 ## PostToolUse hook (optional)
 
-For near-real-time indexing, wire the hook into Claude Code's `~/.claude/settings.json`:
+For near-real-time session indexing, add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -141,7 +230,8 @@ For near-real-time indexing, wire the hook into Claude Code's `~/.claude/setting
 }
 ```
 
-The hook fires after every tool call and triggers an async scan in the background. It never blocks Claude Code — if the daemon is not running, the hook exits silently in under 1 second.
+Fires after every tool call, triggers an async POST to `/scan`. Never blocks — if the
+daemon is not running the hook exits silently in under 1 second.
 
 ---
 
@@ -175,25 +265,30 @@ alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 
 ## Releases
 
-| Version | Sessions indexed | Notes |
-|---------|-----------------|-------|
-| v0.1.0 | All `.jsonl` files in `~/.claude/projects/` | Initial release |
+| Version | Notes |
+|---------|-------|
+| v0.1.0 | Session-level indexing — `~/.claude/projects/**/*.jsonl` → SQLite+FTS5 |
+| v0.2.0 | Tool-level events — ingests `~/.kcp/events.jsonl` (kcp-commands v0.9.0), `kcp-memory events search` CLI + `/events/search` endpoint |
+| v0.3.0 | MCP server — `kcp-memory mcp` subcommand; four MCP tools for Claude Code inline use |
 
 ---
 
 ## How it relates to kcp-commands
 
-[kcp-commands](https://github.com/Cantara/kcp-commands) saves context window by injecting CLI syntax before Bash tool calls and filtering noisy output after. kcp-memory is complementary:
+[kcp-commands](https://github.com/Cantara/kcp-commands) saves context window by injecting
+CLI syntax before Bash tool calls and filtering noisy output after. kcp-memory is
+complementary — it makes the past retrievable and queryable.
 
 | | kcp-commands | kcp-memory |
 |--|-------------|-----------|
 | **Port** | 7734 | 7735 |
-| **Scope** | CLI commands | Session transcripts |
 | **Hook** | PreToolUse | PostToolUse |
-| **Stores** | Nothing (stateless) | SQLite |
+| **Stores** | Nothing (stateless) | `~/.kcp/memory.db` (SQLite) |
+| **Reads** | 283 command manifests | `~/.claude/projects/**/*.jsonl` + `~/.kcp/events.jsonl` |
 | **Answers** | "How do I run this?" | "What did I do before?" |
+| **MCP** | — | 4 tools (v0.3.0) |
 
-Both use the same `~/.kcp/` directory and are part of the KCP ecosystem.
+Both use `~/.kcp/` and are part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
 
 ---
 
@@ -205,7 +300,7 @@ mvn package -q
 # Output: target/kcp-memory-daemon.jar
 ```
 
-Java 21 required.
+Java 21 required. No Spring, no framework, no cloud calls. Dependencies: `sqlite-jdbc`, `jackson-databind`, `picocli`.
 
 ---
 
