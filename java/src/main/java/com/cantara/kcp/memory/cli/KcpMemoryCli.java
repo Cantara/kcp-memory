@@ -2,7 +2,10 @@ package com.cantara.kcp.memory.cli;
 
 import com.cantara.kcp.memory.KcpMemoryDaemon;
 import com.cantara.kcp.memory.model.SearchResult;
+import com.cantara.kcp.memory.model.ToolEvent;
+import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
+import com.cantara.kcp.memory.store.EventStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.store.ToolUsageStore;
@@ -18,14 +21,15 @@ import java.util.concurrent.Callable;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = "0.1.0",
+        version = "0.2.0",
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
                 KcpMemoryCli.ScanCmd.class,
                 KcpMemoryCli.SearchCmd.class,
                 KcpMemoryCli.ListCmd.class,
-                KcpMemoryCli.StatsCmd.class
+                KcpMemoryCli.StatsCmd.class,
+                KcpMemoryCli.EventsCmd.class
         }
 )
 public class KcpMemoryCli implements Callable<Integer> {
@@ -174,6 +178,62 @@ public class KcpMemoryCli implements Callable<Integer> {
         }
 
         private String nullSafe(String s) { return s != null ? s : "—"; }
+    }
+
+    // ------------------------------------------------------------------
+    // events — search tool-call events from ~/.kcp/events.jsonl
+    // ------------------------------------------------------------------
+    @Command(name = "events", description = "Search tool-call events indexed from ~/.kcp/events.jsonl",
+             subcommands = { KcpMemoryCli.EventsCmd.EventsSearchCmd.class })
+    static class EventsCmd implements Callable<Integer> {
+        @Override
+        public Integer call() {
+            CommandLine.usage(this, System.out);
+            return 0;
+        }
+
+        @Command(name = "search", description = "Full-text search over indexed tool-call events")
+        static class EventsSearchCmd implements Callable<Integer> {
+
+            @Parameters(arity = "1..*", description = "Search query")
+            List<String> queryWords;
+
+            @Option(names = {"--limit", "-n"}, description = "Max results (default: 20)", defaultValue = "20")
+            int limit;
+
+            @Override
+            public Integer call() throws Exception {
+                String query = String.join(" ", queryWords);
+                try (MemoryDatabase db = new MemoryDatabase()) {
+                    // Ingest any new events before searching
+                    new EventLogScanner(db).scan();
+
+                    EventStore store = new EventStore(db);
+                    List<ToolEvent> results = store.search(query, limit);
+                    if (results.isEmpty()) {
+                        System.out.println("[kcp-memory] no events for: " + query);
+                        return 0;
+                    }
+                    System.out.printf("[kcp-memory] %d event(s) for \"%s\"%n%n", results.size(), query);
+                    for (ToolEvent e : results) {
+                        printEvent(e);
+                    }
+                    return 0;
+                }
+            }
+        }
+    }
+
+    private static void printEvent(ToolEvent e) {
+        System.out.printf("  %s  %s%n",
+                e.eventTs() != null ? e.eventTs().substring(0, 19).replace('T', ' ') : "?",
+                e.projectDir());
+        System.out.printf("  %s  [%s]%n",
+                e.sessionId().length() > 8 ? e.sessionId().substring(0, 8) : e.sessionId(),
+                e.manifestKey() != null ? e.manifestKey() : "no-manifest");
+        String cmd = e.command();
+        if (cmd.length() > 120) cmd = cmd.substring(0, 120) + "…";
+        System.out.printf("  $ %s%n%n", cmd);
     }
 
     // ------------------------------------------------------------------

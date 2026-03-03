@@ -1,6 +1,7 @@
 package com.cantara.kcp.memory;
 
 import com.cantara.kcp.memory.handler.*;
+import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.sun.net.httpserver.HttpServer;
@@ -41,19 +42,22 @@ public class KcpMemoryDaemon {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", PORT), 0);
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
 
-        server.createContext("/health",   new HealthHandler(db));
-        server.createContext("/search",   new SearchHandler(db));
-        server.createContext("/sessions", new ListHandler(db));
-        server.createContext("/stats",    new StatsHandler(db));
-        server.createContext("/scan",     new ScanHandler(db));
+        server.createContext("/health",        new HealthHandler(db));
+        server.createContext("/search",        new SearchHandler(db));
+        server.createContext("/sessions",      new ListHandler(db));
+        server.createContext("/stats",         new StatsHandler(db));
+        server.createContext("/scan",          new ScanHandler(db));
+        server.createContext("/events/search", new EventsHandler(db));
 
         server.start();
         LOG.info("kcp-memory daemon started on port " + PORT);
 
-        // Initial scan on startup
+        // Initial scans on startup
         Thread.ofVirtual().start(() -> {
-            LOG.info("Running initial scan on startup...");
+            LOG.info("Running initial session scan on startup...");
             new SessionScanner(db).scan(false);
+            LOG.info("Running initial event log scan on startup...");
+            new EventLogScanner(db).scan();
         });
 
         // Background scan every 30 minutes
@@ -62,10 +66,10 @@ public class KcpMemoryDaemon {
             t.setDaemon(true);
             return t;
         });
-        scheduler.scheduleAtFixedRate(
-                () -> new SessionScanner(db).scan(false),
-                30, 30, TimeUnit.MINUTES
-        );
+        scheduler.scheduleAtFixedRate(() -> {
+            new SessionScanner(db).scan(false);
+            new EventLogScanner(db).scan();
+        }, 30, 30, TimeUnit.MINUTES);
 
         // Shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {

@@ -29,7 +29,7 @@ public class HealthHandler extends BaseHandler {
             sendJson(ex, 200, Map.of(
                     "status", "ok",
                     "sessions", stats.totalSessions(),
-                    "version", "0.1.0"
+                    "version", "0.2.0"
             ));
         } catch (Exception e) {
             sendJson(ex, 200, Map.of("status", "degraded", "error", e.getMessage()));
