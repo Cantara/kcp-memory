@@ -8,8 +8,10 @@ kcp-memory search "OAuth implementation"
 kcp-memory events search "kubectl apply"
 kcp-memory stats
 
-# MCP — Claude queries directly during a session
-# (register once in ~/.claude/settings.json)
+# MCP — Claude queries directly during a session (6 tools)
+# Register once in ~/.claude/settings.json, then call inline:
+#   kcp_memory_search · kcp_memory_events_search · kcp_memory_list
+#   kcp_memory_stats · kcp_memory_session_detail · kcp_memory_project_context
 ```
 
 Part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
@@ -105,9 +107,9 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-Claude Code can now call `kcp_memory_search`, `kcp_memory_events_search`,
-`kcp_memory_list`, and `kcp_memory_stats` inline during any session — no manual CLI call,
-no context-switching.
+Claude Code can now call all six tools inline during any session — no manual CLI call,
+no context-switching: `kcp_memory_search`, `kcp_memory_events_search`, `kcp_memory_list`,
+`kcp_memory_stats`, `kcp_memory_session_detail`, and `kcp_memory_project_context`.
 
 ---
 
@@ -128,9 +130,9 @@ before every `kcp_memory_events_search` call.
 
 ---
 
-## MCP server (v0.3.0)
+## MCP server
 
-The MCP server exposes four tools over stdio (JSON-RPC 2.0):
+The MCP server exposes six tools over stdio (JSON-RPC 2.0):
 
 | Tool | What it answers |
 |------|----------------|
@@ -289,7 +291,7 @@ complementary — it makes the past retrievable and queryable.
 | **Stores** | Nothing (stateless) | `~/.kcp/memory.db` (SQLite) |
 | **Reads** | 283 command manifests | `~/.claude/projects/**/*.jsonl` + `~/.kcp/events.jsonl` |
 | **Answers** | "How do I run this?" | "What did I do before?" |
-| **MCP** | — | 4 tools (v0.3.0) |
+| **MCP** | — | 6 tools (v0.4.0) |
 
 Both use `~/.kcp/` and are part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
 

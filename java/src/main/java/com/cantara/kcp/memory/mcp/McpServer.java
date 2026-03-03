@@ -38,12 +38,14 @@ import java.util.logging.Logger;
  * }
  * </pre>
  * <p>
- * Tools exposed:
+ * Tools exposed (6):
  * <ul>
- *   <li>kcp_memory_search        — FTS5 search over session transcripts</li>
- *   <li>kcp_memory_events_search — FTS5 search over tool-call events (requires kcp-commands v0.9.0)</li>
- *   <li>kcp_memory_list          — list recent sessions, optionally by project</li>
- *   <li>kcp_memory_stats         — aggregate statistics</li>
+ *   <li>kcp_memory_search          — FTS5 search over session transcripts</li>
+ *   <li>kcp_memory_events_search   — FTS5 search over tool-call events (requires kcp-commands v0.9.0)</li>
+ *   <li>kcp_memory_list            — list recent sessions, optionally by project</li>
+ *   <li>kcp_memory_stats           — aggregate statistics</li>
+ *   <li>kcp_memory_session_detail  — full content of a specific session: user messages, files, tools (v0.4.0)</li>
+ *   <li>kcp_memory_project_context — auto-detect project from PWD, return last 5 sessions + 20 events (v0.4.0)</li>
  * </ul>
  */
 public class McpServer {
