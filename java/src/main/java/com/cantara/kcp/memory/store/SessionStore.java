@@ -64,6 +64,47 @@ public class SessionStore {
         }
     }
 
+    /** Return full session detail by session_id, or null if not found. */
+    public Session getById(String sessionId) throws SQLException {
+        String sql = """
+                SELECT session_id, project_dir, git_branch, slug, model,
+                       started_at, ended_at, turn_count, tool_call_count,
+                       tool_names, files_json, first_message, all_user_text
+                FROM sessions WHERE session_id = ?
+                """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                Session s = new Session();
+                s.setSessionId(rs.getString("session_id"));
+                s.setProjectDir(rs.getString("project_dir"));
+                s.setGitBranch(rs.getString("git_branch"));
+                s.setSlug(rs.getString("slug"));
+                s.setModel(rs.getString("model"));
+                s.setStartedAt(rs.getString("started_at"));
+                s.setEndedAt(rs.getString("ended_at"));
+                s.setTurnCount(rs.getInt("turn_count"));
+                s.setToolCallCount(rs.getInt("tool_call_count"));
+                s.setFirstMessage(rs.getString("first_message"));
+                s.setAllUserText(rs.getString("all_user_text"));
+                s.setToolNames(fromJson(rs.getString("tool_names")));
+                s.setFiles(fromJson(rs.getString("files_json")));
+                return s;
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> fromJson(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            return MAPPER.readValue(json, List.class);
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
     /** Return the scanned_at timestamp for a session_id, or null if not indexed. */
     public String getScannedAt(String sessionId) throws SQLException {
         String sql = "SELECT scanned_at FROM sessions WHERE session_id = ?";

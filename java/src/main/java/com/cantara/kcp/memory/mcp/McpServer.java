@@ -1,6 +1,7 @@
 package com.cantara.kcp.memory.mcp;
 
 import com.cantara.kcp.memory.model.SearchResult;
+import com.cantara.kcp.memory.model.Session;
 import com.cantara.kcp.memory.model.ToolEvent;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
@@ -49,7 +50,7 @@ public class McpServer {
 
     private static final Logger LOG              = Logger.getLogger(McpServer.class.getName());
     private static final String PROTOCOL_VERSION = "2024-11-05";
-    public  static final String SERVER_VERSION   = "0.3.0";
+    public  static final String SERVER_VERSION   = "0.4.0";
 
     private final ObjectMapper   mapper = new ObjectMapper();
     private final MemoryDatabase db;
@@ -163,6 +164,25 @@ public class McpServer {
                 schema().noRequired()
         ));
 
+        tools.add(tool(
+                "kcp_memory_session_detail",
+                "Retrieve full content of a specific session by session ID — user messages, files " +
+                "touched, and tools used. Use after kcp_memory_search to read what actually happened " +
+                "in a session found by search. Session IDs are returned in search and list results.",
+                schema()
+                        .required("session_id", "string", "Session ID from a kcp_memory_search or kcp_memory_list result")
+        ));
+
+        tools.add(tool(
+                "kcp_memory_project_context",
+                "Retrieve recent activity for the current project directory. Returns the last 5 sessions " +
+                "and last 20 tool-call events for this project. Call this at the start of a session to " +
+                "immediately know what was done here last time — no query needed.",
+                schema()
+                        .optional("project", "string",
+                                  "Project directory path. Defaults to the current working directory (PWD env var).")
+        ));
+
         return result;
     }
 
@@ -186,11 +206,13 @@ public class McpServer {
         boolean isError = false;
         try {
             text = switch (name) {
-                case "kcp_memory_search"        -> toolSearch(args);
-                case "kcp_memory_events_search" -> toolEventsSearch(args);
-                case "kcp_memory_list"          -> toolList(args);
-                case "kcp_memory_stats"         -> toolStats();
-                default                          -> "Unknown tool: " + name;
+                case "kcp_memory_search"          -> toolSearch(args);
+                case "kcp_memory_events_search"   -> toolEventsSearch(args);
+                case "kcp_memory_list"            -> toolList(args);
+                case "kcp_memory_stats"           -> toolStats();
+                case "kcp_memory_session_detail"  -> toolSessionDetail(args);
+                case "kcp_memory_project_context" -> toolProjectContext(args);
+                default                            -> "Unknown tool: " + name;
             };
         } catch (Exception e) {
             text    = "Error: " + e.getMessage();
@@ -278,6 +300,82 @@ public class McpServer {
             sb.append("\nTop tools:\n");
             topTools.forEach(t -> sb.append(String.format("  %-25s %,d%n", t.toolName(), t.count())));
         }
+        return sb.toString();
+    }
+
+    private String toolSessionDetail(JsonNode args) throws Exception {
+        String sessionId = args.path("session_id").asText("").strip();
+        if (sessionId.isEmpty()) return "Error: session_id is required";
+
+        Session s = new SessionStore(db).getById(sessionId);
+        if (s == null) return "Session not found: " + sessionId;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Session: ").append(s.getSessionId()).append("\n");
+        sb.append("Project: ").append(s.getProjectDir()).append("\n");
+        if (s.getGitBranch() != null) sb.append("Branch:  ").append(s.getGitBranch()).append("\n");
+        if (s.getModel()     != null) sb.append("Model:   ").append(s.getModel()).append("\n");
+        sb.append("Date:    ").append(s.getStartedAt() != null ? s.getStartedAt().substring(0, 10) : "?").append("\n");
+        sb.append("Turns:   ").append(s.getTurnCount())
+          .append("  Tool calls: ").append(s.getToolCallCount()).append("\n");
+
+        if (s.getToolNames() != null && !s.getToolNames().isEmpty()) {
+            sb.append("\nTools used: ").append(String.join(", ", s.getToolNames())).append("\n");
+        }
+
+        if (s.getFiles() != null && !s.getFiles().isEmpty()) {
+            sb.append("\nFiles touched (").append(s.getFiles().size()).append("):\n");
+            s.getFiles().stream().limit(30).forEach(f -> sb.append("  ").append(f).append("\n"));
+            if (s.getFiles().size() > 30)
+                sb.append("  … and ").append(s.getFiles().size() - 30).append(" more\n");
+        }
+
+        if (s.getAllUserText() != null && !s.getAllUserText().isBlank()) {
+            sb.append("\nUser messages:\n");
+            String text = s.getAllUserText();
+            if (text.length() > 4000) {
+                sb.append(text, 0, 4000).append("\n… [truncated — ").append(text.length() - 4000).append(" more chars]\n");
+            } else {
+                sb.append(text).append("\n");
+            }
+        }
+
+        return sb.toString();
+    }
+
+    private String toolProjectContext(JsonNode args) throws Exception {
+        // Resolve project directory: explicit arg → PWD env → fallback message
+        String project = args.path("project").asText("").strip();
+        if (project.isEmpty()) project = System.getenv("PWD");
+        if (project == null || project.isBlank())
+            return "Could not determine project directory. Pass 'project' argument explicitly.";
+
+        // Ingest latest events before querying
+        new EventLogScanner(db).scan();
+
+        SessionStore      sessionStore = new SessionStore(db);
+        EventStore        eventStore   = new EventStore(db);
+
+        List<SearchResult> sessions = sessionStore.list(project, 5);
+        List<ToolEvent>    events   = eventStore.list(project, 20);
+
+        if (sessions.isEmpty() && events.isEmpty())
+            return "No history found for project: " + project +
+                   "\nRun `kcp-memory scan` to index sessions.";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Project context: ").append(project).append("\n\n");
+
+        if (!sessions.isEmpty()) {
+            sb.append("Recent sessions (").append(sessions.size()).append("):\n\n");
+            for (SearchResult r : sessions) sb.append(formatSession(r));
+        }
+
+        if (!events.isEmpty()) {
+            sb.append("Recent tool-call events (").append(events.size()).append("):\n\n");
+            for (ToolEvent e : events) sb.append(formatEvent(e));
+        }
+
         return sb.toString();
     }
 
