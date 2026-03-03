@@ -138,6 +138,8 @@ The MCP server exposes four tools over stdio (JSON-RPC 2.0):
 | `kcp_memory_events_search` | "Which projects did I run `kubectl apply` in?" — FTS5 over tool-call events |
 | `kcp_memory_list` | Recent sessions, optionally filtered by project directory |
 | `kcp_memory_stats` | Total sessions, turns, tool calls, date range, top tools |
+| `kcp_memory_session_detail` | Full content of a specific session — user messages, files touched, tools used *(v0.4.0)* |
+| `kcp_memory_project_context` | Auto-detect current project from `PWD`, return last 5 sessions + 20 events — call at session start *(v0.4.0)* |
 
 Registration (`~/.claude/settings.json`):
 
@@ -270,6 +272,7 @@ alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 | v0.1.0 | Session-level indexing — `~/.claude/projects/**/*.jsonl` → SQLite+FTS5 |
 | v0.2.0 | Tool-level events — ingests `~/.kcp/events.jsonl` (kcp-commands v0.9.0), `kcp-memory events search` CLI + `/events/search` endpoint |
 | v0.3.0 | MCP server — `kcp-memory mcp` subcommand; four MCP tools for Claude Code inline use |
+| v0.4.0 | `kcp_memory_session_detail` (find → read flow) + `kcp_memory_project_context` (proactive session-start context from `PWD`) |
 
 ---
 
