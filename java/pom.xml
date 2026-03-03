@@ -6,7 +6,7 @@
 
     <groupId>com.cantara.kcp</groupId>
     <artifactId>kcp-memory</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <packaging>jar</packaging>
 
     <name>kcp-memory</name>

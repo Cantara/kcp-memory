@@ -1,6 +1,7 @@
 package com.cantara.kcp.memory.cli;
 
 import com.cantara.kcp.memory.KcpMemoryDaemon;
+import com.cantara.kcp.memory.mcp.McpServer;
 import com.cantara.kcp.memory.model.SearchResult;
 import com.cantara.kcp.memory.model.ToolEvent;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
@@ -21,7 +22,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = "0.2.0",
+        version = "0.3.0",
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
@@ -29,7 +30,8 @@ import java.util.concurrent.Callable;
                 KcpMemoryCli.SearchCmd.class,
                 KcpMemoryCli.ListCmd.class,
                 KcpMemoryCli.StatsCmd.class,
-                KcpMemoryCli.EventsCmd.class
+                KcpMemoryCli.EventsCmd.class,
+                KcpMemoryCli.McpCmd.class
         }
 )
 public class KcpMemoryCli implements Callable<Integer> {
@@ -234,6 +236,23 @@ public class KcpMemoryCli implements Callable<Integer> {
         String cmd = e.command();
         if (cmd.length() > 120) cmd = cmd.substring(0, 120) + "…";
         System.out.printf("  $ %s%n%n", cmd);
+    }
+
+    // ------------------------------------------------------------------
+    // mcp — stdio MCP server for Claude Code integration
+    // ------------------------------------------------------------------
+    @Command(name = "mcp", description = "Start the kcp-memory MCP stdio server (for ~/.claude/settings.json mcpServers)")
+    static class McpCmd implements Callable<Integer> {
+
+        @Override
+        public Integer call() throws Exception {
+            // JUL ConsoleHandler already writes to System.err by default —
+            // stdout is the MCP protocol channel and must not be polluted.
+            MemoryDatabase db = new MemoryDatabase();
+            new McpServer(db).run();
+            db.close();
+            return 0;
+        }
     }
 
     // ------------------------------------------------------------------
