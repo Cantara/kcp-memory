@@ -1,0 +1,41 @@
+# kcp-memory
+
+> Episodic memory for Claude Code. Indexes ~/.claude/projects/**/*.jsonl session transcripts
+> and ~/.kcp/events.jsonl tool-call events (from kcp-commands v0.9.0) into a local SQLite+FTS5
+> database. Available as a CLI, HTTP daemon (port 7735), and MCP server (6 tools).
+
+Solves the blank-slate problem: every Claude Code session starts with no memory of prior work.
+`kcp_memory_project_context` at session start gives Claude the last 5 sessions + 20 tool events
+for the current project — no query needed.
+
+Part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
+
+## Key files
+
+- [README.md](README.md): Full documentation — install, CLI, HTTP API, MCP tools, three-layer model
+
+## Machine-readable manifest
+
+[knowledge.yaml](knowledge.yaml)
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Cantara/kcp-memory/main/bin/install.sh | bash
+alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
+```
+
+## MCP tools (v0.4.0)
+
+- `kcp_memory_search` — FTS5 search over session transcripts
+- `kcp_memory_events_search` — FTS5 search over tool-call events
+- `kcp_memory_list` — recent sessions, optionally filtered by project
+- `kcp_memory_stats` — total sessions, turns, tool calls, top tools
+- `kcp_memory_session_detail` — full content of a specific session
+- `kcp_memory_project_context` — proactive context from PWD (no query needed)
+
+## Related
+
+- [kcp-commands](https://github.com/Cantara/kcp-commands) — writes ~/.kcp/events.jsonl (Phase C); saves 33% context window
+- [Knowledge Context Protocol](https://github.com/Cantara/knowledge-context-protocol) — the KCP spec
+- [Release post](https://wiki.totto.org/blog/2026/03/03/kcp-memory/) — design rationale and architecture

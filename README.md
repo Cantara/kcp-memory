@@ -278,6 +278,12 @@ alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 
 ---
 
+## Knowledge manifest
+
+This repository ships a [`knowledge.yaml`](knowledge.yaml) and [`llms.txt`](llms.txt) for AI agent navigation.
+
+---
+
 ## How it relates to kcp-commands
 
 [kcp-commands](https://github.com/Cantara/kcp-commands) saves context window by injecting
@@ -306,6 +312,14 @@ mvn package -q
 ```
 
 Java 21 required. No Spring, no framework, no cloud calls. Dependencies: `sqlite-jdbc`, `jackson-databind`, `picocli`.
+
+---
+
+## Related
+
+- [Release post](https://wiki.totto.org/blog/2026/03/03/kcp-memory/) — design rationale, three-layer model, benchmark numbers
+- [kcp-commands](https://github.com/Cantara/kcp-commands) — writes `~/.kcp/events.jsonl`; PreToolUse companion
+- [Knowledge Context Protocol](https://github.com/Cantara/knowledge-context-protocol) — the KCP specification
 
 ---
 
