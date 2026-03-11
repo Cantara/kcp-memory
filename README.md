@@ -1,6 +1,6 @@
 # kcp-memory
 
-**Episodic memory for Claude Code.** Indexes your session transcripts and tool-call events into a local SQLite database — searchable in milliseconds. Available as a CLI, an HTTP API, and an MCP server so Claude can query its own history inline.
+**Episodic memory for Claude Code, Gemini CLI, and Codex CLI.** Indexes your session transcripts and tool-call events into a local SQLite database — searchable in milliseconds. Available as a CLI, an HTTP API, and an MCP server so Claude can query its own history inline.
 
 ```bash
 # CLI
@@ -48,7 +48,13 @@ Downloads the JAR to `~/.kcp/`, starts the daemon on port 7735, and runs an init
 kcp-memory scan
 ```
 
-Scans `~/.claude/projects/**/*.jsonl`. Incremental by default — only new or changed files re-indexed.
+Scans these transcript roots:
+
+- `~/.claude/projects/**/*.jsonl`
+- `~/.gemini/tmp/*/chats/session-*.json`
+- `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+
+Incremental by default — only new or changed files re-indexed.
 
 ### 3. Search session transcripts
 
@@ -172,6 +178,15 @@ PreToolUse hook. On every Bash tool call, kcp-commands appends a JSON event to
 
 kcp-memory reads this file using a byte-offset cursor — each scan reads only the bytes
 appended since last time, typically one event in under 1ms.
+
+For Gemini/Codex hook integrations, this repo also ships a lightweight logger utility:
+
+```bash
+node /path/to/kcp-memory/bin/kcp-logger.js '{"session_id":"abc123","project_dir":"'$PWD'","tool":"post_tool_use","command":"mvn test"}'
+```
+
+It appends a normalized JSON line to `~/.kcp/events.jsonl`, so Gemini `AfterTool` and Codex
+`post_tool_use` hooks can feed the existing event index without any daemon changes.
 
 Search example:
 

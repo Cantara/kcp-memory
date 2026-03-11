@@ -93,6 +93,17 @@ class SessionStoreTest {
     }
 
     @Test
+    void searchTreatsHyphenatedTermsAsLiteralText() throws SQLException {
+        Session s = makeSession("sess-010", "/src/proj", "Configure queue-secret header");
+        s.setAllUserText("The X-API-Key is queue-secret for local testing");
+        store.upsert(s);
+
+        List<SearchResult> results = store.search("queue-secret API key", 5);
+        assertFalse(results.isEmpty());
+        assertEquals("sess-010", results.get(0).getSessionId());
+    }
+
+    @Test
     void statsAggregatesCorrectly() throws SQLException {
         Session s1 = makeSession("sess-008", "/src/x", "Task one");
         s1.setTurnCount(5);
