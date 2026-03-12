@@ -129,7 +129,7 @@ public class SessionStore {
                 LIMIT ?
                 """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, query);
+            ps.setString(1, toFtsQuery(query));
             ps.setInt(2, limit);
             return mapResults(ps.executeQuery());
         }
@@ -216,6 +216,23 @@ public class SessionStore {
         } catch (JsonProcessingException e) {
             return null;
         }
+    }
+
+    /**
+     * Quote each term so user input is treated as literal text instead of raw
+     * FTS syntax. This avoids errors on characters like '-' in "queue-secret".
+     */
+    private String toFtsQuery(String query) {
+        if (query == null || query.isBlank()) return "\"\"";
+        StringBuilder out = new StringBuilder();
+        for (String token : query.trim().split("\\s+")) {
+            if (token.isBlank()) continue;
+            if (!out.isEmpty()) out.append(' ');
+            out.append('"')
+               .append(token.replace("\"", "\"\""))
+               .append('"');
+        }
+        return out.isEmpty() ? "\"\"" : out.toString();
     }
 
     /** Aggregate statistics across all sessions. */
