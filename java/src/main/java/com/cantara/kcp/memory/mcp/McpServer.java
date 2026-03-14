@@ -1,10 +1,13 @@
 package com.cantara.kcp.memory.mcp;
 
+import com.cantara.kcp.memory.model.AgentSession;
 import com.cantara.kcp.memory.model.SearchResult;
 import com.cantara.kcp.memory.model.Session;
 import com.cantara.kcp.memory.model.ToolEvent;
+import com.cantara.kcp.memory.scanner.AgentSessionScanner;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
+import com.cantara.kcp.memory.store.AgentSessionStore;
 import com.cantara.kcp.memory.store.EventStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.SessionStore;
@@ -38,7 +41,7 @@ import java.util.logging.Logger;
  * }
  * </pre>
  * <p>
- * Tools exposed (6):
+ * Tools exposed (8):
  * <ul>
  *   <li>kcp_memory_search          — FTS5 search over session transcripts</li>
  *   <li>kcp_memory_events_search   — FTS5 search over tool-call events (requires kcp-commands v0.9.0)</li>
@@ -46,13 +49,15 @@ import java.util.logging.Logger;
  *   <li>kcp_memory_stats           — aggregate statistics</li>
  *   <li>kcp_memory_session_detail  — full content of a specific session: user messages, files, tools (v0.4.0)</li>
  *   <li>kcp_memory_project_context — auto-detect project from PWD, return last 5 sessions + 20 events (v0.4.0)</li>
+ *   <li>kcp_memory_subagent_search — FTS5 search within subagent transcripts (v0.5.0)</li>
+ *   <li>kcp_memory_session_tree    — parent session + all child agents as a tree (v0.5.0)</li>
  * </ul>
  */
 public class McpServer {
 
     private static final Logger LOG              = Logger.getLogger(McpServer.class.getName());
     private static final String PROTOCOL_VERSION = "2024-11-05";
-    public  static final String SERVER_VERSION   = "0.4.0";
+    public  static final String SERVER_VERSION   = "0.5.0";
 
     private final ObjectMapper   mapper = new ObjectMapper();
     private final MemoryDatabase db;
@@ -66,6 +71,7 @@ public class McpServer {
         // Initial scan so tools return fresh data immediately
         new SessionScanner(db).scan(false);
         new EventLogScanner(db).scan();
+        new AgentSessionScanner(db).scan(false);
 
         // stdout = protocol; auto-flush so responses are sent immediately
         PrintWriter    out = new PrintWriter(System.out, true);
@@ -185,6 +191,29 @@ public class McpServer {
                                   "Project directory path. Defaults to the current working directory (PWD env var).")
         ));
 
+        tools.add(tool(
+                "kcp_memory_subagent_search",
+                "Search within subagent (Task tool) transcripts from past Claude Code sessions. " +
+                "Subagents contain the detailed reasoning, discoveries, and tool usage from delegated " +
+                "tasks. Use this to find architectural discoveries, rejected approaches, and " +
+                "cross-repository relationships found by past agents — e.g. 'CatalystOne events', " +
+                "'Flyway migration', 'factory adapter'. Added in v0.5.0.",
+                schema()
+                        .required("query",             "string",  "Search terms to find in subagent transcripts")
+                        .optional("parent_session_id", "string",  "Limit results to agents from a specific parent session")
+                        .optional("limit",             "integer", "Max results (default 10)")
+        ));
+
+        tools.add(tool(
+                "kcp_memory_session_tree",
+                "Show a session and all its child subagents as a tree. Reveals which agents were " +
+                "spawned during a session, what each investigated, and how many tool calls they made. " +
+                "Use after kcp_memory_search to understand a session's full scope including delegated work. " +
+                "Added in v0.5.0.",
+                schema()
+                        .required("session_id", "string", "Parent session ID from kcp_memory_search or kcp_memory_list")
+        ));
+
         return result;
     }
 
@@ -214,6 +243,8 @@ public class McpServer {
                 case "kcp_memory_stats"           -> toolStats();
                 case "kcp_memory_session_detail"  -> toolSessionDetail(args);
                 case "kcp_memory_project_context" -> toolProjectContext(args);
+                case "kcp_memory_subagent_search" -> toolSubagentSearch(args);
+                case "kcp_memory_session_tree"    -> toolSessionTree(args);
                 default                            -> "Unknown tool: " + name;
             };
         } catch (Exception e) {
@@ -381,6 +412,86 @@ public class McpServer {
         return sb.toString();
     }
 
+    private String toolSubagentSearch(JsonNode args) throws Exception {
+        String query           = args.path("query").asText("").strip();
+        String parentSessionId = args.path("parent_session_id").asText(null);
+        if (parentSessionId != null && parentSessionId.isBlank()) parentSessionId = null;
+        int    limit           = args.path("limit").asInt(10);
+        if (query.isEmpty()) return "Error: query is required";
+
+        // Refresh agent index before searching
+        new AgentSessionScanner(db).scan(false);
+
+        AgentSessionStore    store   = new AgentSessionStore(db);
+        List<AgentSession>   results = store.search(query, parentSessionId, limit);
+
+        if (results.isEmpty()) return "No subagent sessions found for: " + query;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(results.size()).append(" subagent session(s) for \"").append(query).append("\":\n\n");
+        for (AgentSession a : results) sb.append(formatAgent(a));
+        return sb.toString();
+    }
+
+    private String toolSessionTree(JsonNode args) throws Exception {
+        String sessionId = args.path("session_id").asText("").strip();
+        if (sessionId.isEmpty()) return "Error: session_id is required";
+
+        // Refresh agent index
+        new AgentSessionScanner(db).scan(false);
+
+        Session            parent = new SessionStore(db).getById(sessionId);
+        List<AgentSession> agents = new AgentSessionStore(db).listByParent(sessionId, 100);
+
+        StringBuilder sb = new StringBuilder();
+
+        // Parent session header
+        if (parent != null) {
+            String date = parent.getStartedAt() != null ? parent.getStartedAt().substring(0, 10) : "?";
+            sb.append("Session: ").append(parent.getSessionId()).append("\n");
+            sb.append("Date:    ").append(date).append("\n");
+            sb.append("Project: ").append(parent.getProjectDir()).append("\n");
+            sb.append("Turns:   ").append(parent.getTurnCount())
+              .append("  Tool calls: ").append(parent.getToolCallCount()).append("\n");
+            if (parent.getFirstMessage() != null) {
+                String msg = parent.getFirstMessage();
+                if (msg.length() > 100) msg = msg.substring(0, 100) + "…";
+                sb.append("Task:    \"").append(msg).append("\"\n");
+            }
+        } else {
+            sb.append("Session: ").append(sessionId).append(" (not indexed as main session)\n");
+        }
+
+        // Child agents
+        sb.append("\nSubagents (").append(agents.size()).append("):\n");
+        if (agents.isEmpty()) {
+            sb.append("  (none indexed — run kcp-memory scan to index subagents)\n");
+        } else {
+            for (AgentSession a : agents) {
+                String agentShort = a.getAgentId().substring(0, Math.min(8, a.getAgentId().length()));
+                sb.append("  ├─ ").append(agentShort);
+                if (a.getCwd() != null) sb.append("  [").append(a.getCwd()).append("]");
+                sb.append("\n");
+                sb.append("  │  turns=").append(a.getTurnCount())
+                  .append("  tools=").append(a.getToolCallCount());
+                if (a.getToolNames() != null && !a.getToolNames().isEmpty()) {
+                    String tools = String.join(", ", a.getToolNames().stream().limit(5).toList());
+                    sb.append("  (").append(tools);
+                    if (a.getToolNames().size() > 5) sb.append(", …");
+                    sb.append(")");
+                }
+                sb.append("\n");
+                if (a.getFirstMessage() != null) {
+                    String msg = a.getFirstMessage();
+                    if (msg.length() > 100) msg = msg.substring(0, 100) + "…";
+                    sb.append("  │  \"").append(msg).append("\"\n");
+                }
+                sb.append("  │\n");
+            }
+        }
+        return sb.toString();
+    }
+
     // ------------------------------------------------------------------
     // Formatting
     // ------------------------------------------------------------------
@@ -395,6 +506,24 @@ public class McpServer {
           .append("  tools=").append(r.getToolCallCount()).append("\n");
         if (r.getFirstMessage() != null) {
             String msg = r.getFirstMessage();
+            if (msg.length() > 120) msg = msg.substring(0, 120) + "…";
+            sb.append("\"").append(msg).append("\"\n");
+        }
+        sb.append("\n");
+        return sb.toString();
+    }
+
+    private String formatAgent(AgentSession a) {
+        StringBuilder sb = new StringBuilder();
+        String agentShort = a.getAgentId().substring(0, Math.min(8, a.getAgentId().length()));
+        String parentShort = a.getParentSessionId().substring(0, Math.min(8, a.getParentSessionId().length()));
+        sb.append(agentShort).append("  [sub of ").append(parentShort).append("]");
+        if (a.getCwd() != null) sb.append("  ").append(a.getCwd());
+        sb.append("\n");
+        sb.append("turns=").append(a.getTurnCount())
+          .append("  tools=").append(a.getToolCallCount()).append("\n");
+        if (a.getFirstMessage() != null) {
+            String msg = a.getFirstMessage();
             if (msg.length() > 120) msg = msg.substring(0, 120) + "…";
             sb.append("\"").append(msg).append("\"\n");
         }

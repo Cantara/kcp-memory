@@ -1,8 +1,9 @@
 # kcp-memory
 
-> Episodic memory for Claude Code. Indexes ~/.claude/projects/**/*.jsonl session transcripts
-> and ~/.kcp/events.jsonl tool-call events (from kcp-commands v0.9.0) into a local SQLite+FTS5
-> database. Available as a CLI, HTTP daemon (port 7735), and MCP server (6 tools).
+> Episodic memory for Claude Code. Indexes ~/.claude/projects/**/*.jsonl session transcripts,
+> subagent transcripts (subagents/agent-*.jsonl), and ~/.kcp/events.jsonl tool-call events
+> (from kcp-commands v0.9.0) into a local SQLite+FTS5 database. Available as a CLI, HTTP
+> daemon (port 7735), and MCP server (8 tools).
 
 Solves the blank-slate problem: every Claude Code session starts with no memory of prior work.
 `kcp_memory_project_context` at session start gives Claude the last 5 sessions + 20 tool events
@@ -25,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/Cantara/kcp-memory/main/bin/install
 alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 ```
 
-## MCP tools (v0.4.0)
+## MCP tools (v0.5.0)
 
 - `kcp_memory_search` — FTS5 search over session transcripts
 - `kcp_memory_events_search` — FTS5 search over tool-call events
@@ -33,6 +34,8 @@ alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 - `kcp_memory_stats` — total sessions, turns, tool calls, top tools
 - `kcp_memory_session_detail` — full content of a specific session
 - `kcp_memory_project_context` — proactive context from PWD (no query needed)
+- `kcp_memory_subagent_search` — FTS5 search within subagent transcripts (reasoning trails, discoveries, dead ends)
+- `kcp_memory_session_tree` — parent session + all child agents as a tree (delegated scope at a glance)
 
 ## Related
 
