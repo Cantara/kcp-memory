@@ -48,7 +48,10 @@ public class MemoryDatabase implements AutoCloseable {
     }
 
     private void initSchema() throws SQLException {
-        for (String resource : new String[]{"/db/V1__initial_schema.sql", "/db/V2__tool_events.sql"}) {
+        for (String resource : new String[]{
+                "/db/V1__initial_schema.sql",
+                "/db/V2__tool_events.sql",
+                "/db/V3__agent_sessions.sql"}) {
             String sql = loadResource(resource);
             for (String stmt : splitStatements(sql)) {
                 String trimmed = stmt.trim();
