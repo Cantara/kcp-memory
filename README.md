@@ -57,6 +57,26 @@ Scans these transcript roots:
 
 Incremental by default — only new or changed files re-indexed.
 
+#### Automate with a git post-commit hook (recommended)
+
+Rather than running `kcp-memory scan` manually, add a global git hook so every commit triggers an incremental scan automatically:
+
+```bash
+# Create the global hooks directory (if needed)
+git config --global core.hooksPath ~/.git-hooks
+mkdir -p ~/.git-hooks
+
+# Add post-commit hook
+cat >> ~/.git-hooks/post-commit << 'EOF'
+#!/bin/bash
+# Trigger kcp-memory incremental scan in the background
+kcp-memory scan > /dev/null 2>&1 &
+EOF
+chmod +x ~/.git-hooks/post-commit
+```
+
+The incremental scan is near-instant (only new files are processed), so the hook adds no perceptible delay to commits.
+
 ### 3. Search session transcripts
 
 ```bash
@@ -149,7 +169,7 @@ The MCP server exposes eight tools over stdio (JSON-RPC 2.0):
 | `kcp_memory_list` | Recent sessions, optionally filtered by project directory |
 | `kcp_memory_stats` | Total sessions, turns, tool calls, date range, top tools |
 | `kcp_memory_session_detail` | Full content of a specific session — user messages, files touched, tools used *(v0.4.0)* |
-| `kcp_memory_project_context` | Auto-detect current project from `PWD`, return last 5 sessions + 20 events — call at session start *(v0.4.0)* |
+| `kcp_memory_project_context` | Auto-detect current project from `PWD`, return recent sessions + events — call at session start. Accepts `session_limit` and `event_limit` params *(v0.4.0)* |
 | `kcp_memory_subagent_search` | FTS5 search within subagent transcripts — finds architectural discoveries, rejected approaches, and reasoning buried in delegated tasks *(v0.5.0)* |
 | `kcp_memory_session_tree` | Show a parent session and all its child subagents as a tree — reveals delegated scope and per-agent tool usage *(v0.5.0)* |
 

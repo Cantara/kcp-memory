@@ -183,12 +183,13 @@ public class McpServer {
 
         tools.add(tool(
                 "kcp_memory_project_context",
-                "Retrieve recent activity for the current project directory. Returns the last 5 sessions " +
-                "and last 20 tool-call events for this project. Call this at the start of a session to " +
+                "Retrieve recent activity for the current project directory. Returns recent sessions " +
+                "and tool-call events for this project. Call this at the start of a session to " +
                 "immediately know what was done here last time — no query needed.",
                 schema()
-                        .optional("project", "string",
-                                  "Project directory path. Defaults to the current working directory (PWD env var).")
+                        .optional("project",       "string",  "Project directory path. Defaults to the current working directory (PWD env var).")
+                        .optional("session_limit", "integer", "Max sessions to return (default 5).")
+                        .optional("event_limit",   "integer", "Max tool-call events to return (default 20).")
         ));
 
         tools.add(tool(
@@ -386,15 +387,21 @@ public class McpServer {
         // Ingest latest events before querying
         new EventLogScanner(db).scan();
 
+        int sessionLimit = args.path("session_limit").asInt(5);
+        int eventLimit   = args.path("event_limit").asInt(20);
+
         SessionStore      sessionStore = new SessionStore(db);
         EventStore        eventStore   = new EventStore(db);
 
-        List<SearchResult> sessions = sessionStore.list(project, 5);
-        List<ToolEvent>    events   = eventStore.list(project, 20);
+        List<SearchResult> sessions = sessionStore.list(project, sessionLimit);
+        List<ToolEvent>    events   = eventStore.list(project, eventLimit);
 
         if (sessions.isEmpty() && events.isEmpty())
-            return "No history found for project: " + project +
-                   "\nRun `kcp-memory scan` to index sessions.";
+            return "No history found for: " + project +
+                   "\n\nThis project has not been indexed yet. To fix:" +
+                   "\n  1. Run: kcp-memory scan" +
+                   "\n  2. Or add a git post-commit hook (see README) for automatic indexing." +
+                   "\n\n{\"sessions\": [], \"events\": [], \"hint\": \"run kcp-memory scan\"}";
 
         StringBuilder sb = new StringBuilder();
         sb.append("Project context: ").append(project).append("\n\n");
