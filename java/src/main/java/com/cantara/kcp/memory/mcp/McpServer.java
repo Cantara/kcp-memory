@@ -547,7 +547,11 @@ public class McpServer {
           .append("  [").append(e.manifestKey() != null ? e.manifestKey() : "no-manifest").append("]\n");
         String cmd = e.command();
         if (cmd.length() > 120) cmd = cmd.substring(0, 120) + "…";
-        sb.append("$ ").append(cmd).append("\n\n");
+        sb.append("$ ").append(cmd).append("\n");
+        if (e.outputPreview() != null) {
+            sb.append("→ ").append(e.outputPreview()).append("\n");
+        }
+        sb.append("\n");
         return sb.toString();
     }
 

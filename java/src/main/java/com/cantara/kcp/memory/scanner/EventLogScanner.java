@@ -23,14 +23,22 @@ import java.util.logging.Logger;
  */
 public class EventLogScanner {
 
-    private static final Logger      LOG         = Logger.getLogger(EventLogScanner.class.getName());
-    private static final Path        EVENTS_FILE = Path.of(System.getProperty("user.home") + "/.kcp/events.jsonl");
-    private static final ObjectMapper MAPPER     = new ObjectMapper();
+    private static final Logger       LOG          = Logger.getLogger(EventLogScanner.class.getName());
+    private static final Path         DEFAULT_FILE = Path.of(System.getProperty("user.home") + "/.kcp/events.jsonl");
+    private static final ObjectMapper MAPPER       = new ObjectMapper();
+    private static final int          OUTPUT_LIMIT = 200;
 
     private final MemoryDatabase db;
+    private final Path           eventsFile;
 
     public EventLogScanner(MemoryDatabase db) {
-        this.db = db;
+        this(db, DEFAULT_FILE);
+    }
+
+    /** Package-visible constructor for tests — allows injecting a custom events file path. */
+    EventLogScanner(MemoryDatabase db, Path eventsFile) {
+        this.db         = db;
+        this.eventsFile = eventsFile;
     }
 
     /**
@@ -39,17 +47,17 @@ public class EventLogScanner {
      * @return number of events ingested in this scan
      */
     public int scan() {
-        if (!Files.exists(EVENTS_FILE)) return 0;
+        if (!Files.exists(eventsFile)) return 0;
 
         EventStore store = new EventStore(db);
         int count = 0;
 
         try {
             long offset   = store.getByteOffset();
-            long fileSize = Files.size(EVENTS_FILE);
+            long fileSize = Files.size(eventsFile);
             if (offset >= fileSize) return 0; // nothing new
 
-            try (RandomAccessFile raf = new RandomAccessFile(EVENTS_FILE.toFile(), "r")) {
+            try (RandomAccessFile raf = new RandomAccessFile(eventsFile.toFile(), "r")) {
                 raf.seek(offset);
 
                 String line;
@@ -66,8 +74,26 @@ public class EventLogScanner {
                     try {
                         JsonNode node = MAPPER.readTree(line);
 
-                        String ts      = node.path("ts").asText(null);
-                        String cmd     = node.path("command").asText("");
+                        String type = node.path("type").asText("");
+
+                        // Output capture line — update existing event with preview
+                        if ("output".equals(type)) {
+                            String sessionId = node.path("session_id").asText("");
+                            String cmd       = node.path("command").asText("");
+                            String raw       = node.path("output_preview").asText("");
+                            if (!sessionId.isBlank() && !cmd.isBlank() && !raw.isBlank()) {
+                                String preview = raw.length() > OUTPUT_LIMIT
+                                        ? raw.substring(0, OUTPUT_LIMIT) + "…"
+                                        : raw;
+                                store.updateOutputPreview(sessionId, cmd, preview);
+                            }
+                            lastGoodOffset = posAfterLine;
+                            continue;
+                        }
+
+                        // Normal PreToolUse event line
+                        String ts  = node.path("ts").asText(null);
+                        String cmd = node.path("command").asText("");
                         if (ts == null || cmd.isBlank()) {
                             lastGoodOffset = posAfterLine;
                             continue;
@@ -82,6 +108,7 @@ public class EventLogScanner {
                                 cmd,
                                 node.path("manifest_key").isNull() ? null
                                         : node.path("manifest_key").asText(null),
+                                null,  // outputPreview — populated later by output line
                                 null
                         );
 

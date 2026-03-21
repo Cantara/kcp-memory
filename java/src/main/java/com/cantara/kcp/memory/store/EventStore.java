@@ -104,6 +104,28 @@ public class EventStore {
         }
     }
 
+    /**
+     * Set the output_preview for the most recent matching event (by session + command)
+     * that doesn't already have a preview. Used by EventLogScanner to process
+     * {@code type:"output"} lines written by the PostToolUse hook.
+     */
+    public void updateOutputPreview(String sessionId, String command, String preview) throws SQLException {
+        String sql = """
+                UPDATE tool_events SET output_preview = ?
+                WHERE id = (
+                    SELECT id FROM tool_events
+                    WHERE session_id = ? AND command = ? AND output_preview IS NULL
+                    ORDER BY event_ts DESC LIMIT 1
+                )
+                """;
+        try (PreparedStatement ps = db.getConnection().prepareStatement(sql)) {
+            ps.setString(1, preview);
+            ps.setString(2, sessionId);
+            ps.setString(3, command);
+            ps.executeUpdate();
+        }
+    }
+
     private ToolEvent mapRow(ResultSet rs) throws SQLException {
         return new ToolEvent(
                 rs.getLong("id"),
@@ -113,6 +135,7 @@ public class EventStore {
                 rs.getString("tool"),
                 rs.getString("command"),
                 rs.getString("manifest_key"),
+                rs.getString("output_preview"),
                 rs.getString("ingested_at")
         );
     }
