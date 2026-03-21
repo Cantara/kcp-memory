@@ -1,6 +1,7 @@
 package com.cantara.kcp.memory;
 
 import com.cantara.kcp.memory.handler.*;
+import com.cantara.kcp.memory.scanner.AgentSessionScanner;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
 import com.cantara.kcp.memory.store.MemoryDatabase;
@@ -52,10 +53,12 @@ public class KcpMemoryDaemon {
         server.start();
         LOG.info("kcp-memory daemon started on port " + PORT);
 
-        // Initial scans on startup
+        // Initial scans on startup (includes agent sessions)
         Thread.ofVirtual().start(() -> {
             LOG.info("Running initial session scan on startup...");
             new SessionScanner(db).scan(false);
+            LOG.info("Running initial agent session scan on startup...");
+            new AgentSessionScanner(db).scan(false);
             LOG.info("Running initial event log scan on startup...");
             new EventLogScanner(db).scan();
         });
@@ -68,6 +71,7 @@ public class KcpMemoryDaemon {
         });
         scheduler.scheduleAtFixedRate(() -> {
             new SessionScanner(db).scan(false);
+            new AgentSessionScanner(db).scan(false);
             new EventLogScanner(db).scan();
         }, 30, 30, TimeUnit.MINUTES);
 

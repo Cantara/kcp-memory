@@ -2,3 +2,5 @@ java/target/
 *.db
 *.log
 .DS_Store
+.synthesis.md
+docs/

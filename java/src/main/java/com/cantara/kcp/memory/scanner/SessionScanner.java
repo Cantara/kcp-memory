@@ -135,6 +135,8 @@ public class SessionScanner {
 
     private boolean isSupportedSessionFile(Path root, Path file) {
         String name = file.getFileName().toString();
+        // Skip subagent files — they are handled by AgentSessionScanner
+        if (AgentSessionScanner.isSubagentFile(file)) return false;
         if (root.endsWith("projects")) {
             return name.endsWith(".jsonl");
         }
