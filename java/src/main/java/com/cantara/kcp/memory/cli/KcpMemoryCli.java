@@ -3,6 +3,7 @@ package com.cantara.kcp.memory.cli;
 import com.cantara.kcp.memory.KcpMemoryDaemon;
 import com.cantara.kcp.memory.mcp.McpServer;
 import com.cantara.kcp.memory.model.AgentSession;
+import com.cantara.kcp.memory.model.ManifestQualityRecord;
 import com.cantara.kcp.memory.model.SearchResult;
 import com.cantara.kcp.memory.model.ToolEvent;
 import com.cantara.kcp.memory.scanner.AgentSessionScanner;
@@ -10,6 +11,7 @@ import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
 import com.cantara.kcp.memory.store.AgentSessionStore;
 import com.cantara.kcp.memory.store.EventStore;
+import com.cantara.kcp.memory.store.ManifestQualityStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.store.ToolUsageStore;
@@ -20,7 +22,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 
 /**
- * kcp-memory CLI — subcommands: daemon, scan, search, list, stats, events, agents, mcp
+ * kcp-memory CLI — subcommands: daemon, scan, search, list, stats, analyze, events, agents, mcp
  */
 @Command(
         name = "kcp-memory",
@@ -33,6 +35,7 @@ import java.util.concurrent.Callable;
                 KcpMemoryCli.SearchCmd.class,
                 KcpMemoryCli.ListCmd.class,
                 KcpMemoryCli.StatsCmd.class,
+                KcpMemoryCli.AnalyzeCmd.class,
                 KcpMemoryCli.EventsCmd.class,
                 KcpMemoryCli.AgentsCmd.class,
                 KcpMemoryCli.McpCmd.class
@@ -210,6 +213,100 @@ public class KcpMemoryCli implements Callable<Integer> {
         }
 
         private String nullSafe(String s) { return s != null ? s : "—"; }
+    }
+
+    // ------------------------------------------------------------------
+    // analyze — manifest quality feedback loop
+    // ------------------------------------------------------------------
+    @Command(name = "analyze", description = "Analyze manifest quality — surface manifests that correlate with retries, errors, and help lookups")
+    static class AnalyzeCmd implements Callable<Integer> {
+
+        @Option(names = {"--top"}, description = "Number of manifests to show (default: 20)", defaultValue = "20")
+        int top;
+
+        @Option(names = {"--since"}, description = "Only consider events from the last N days (default: 30)", defaultValue = "30")
+        int sinceDays;
+
+        @Option(names = {"--min-calls"}, description = "Exclude manifests with fewer than N calls (default: 5)", defaultValue = "5")
+        int minCalls;
+
+        @Override
+        public Integer call() throws Exception {
+            try (MemoryDatabase db = new MemoryDatabase()) {
+                // Ingest any new events before analyzing
+                new EventLogScanner(db).scan();
+
+                ManifestQualityStore store = new ManifestQualityStore(db);
+                int totalManifests   = store.countManifests();
+                long totalCalls      = store.countManifestCalls();
+
+                List<ManifestQualityRecord> records = store.analyze(sinceDays, minCalls, top);
+
+                if (records.isEmpty()) {
+                    System.out.printf("[kcp-memory] manifest quality analysis — %d manifests, %,d total calls%n",
+                            totalManifests, totalCalls);
+                    System.out.println("  No manifests with enough data (min " + minCalls + " calls in last " + sinceDays + " days).");
+                    return 0;
+                }
+
+                System.out.printf("[kcp-memory] manifest quality analysis — %d manifests, %,d total calls%n%n",
+                        totalManifests, totalCalls);
+
+                // Header
+                System.out.printf("  %-25s %5s   %7s  %13s  %6s   %5s%n",
+                        "MANIFEST KEY", "CALLS", "RETRIES", "HELP-FOLLOWUP", "ERRORS", "SCORE");
+                System.out.println("  " + "─".repeat(70));
+
+                // Rows
+                for (ManifestQualityRecord r : records) {
+                    String indicator = r.qualityScore() >= 0.20 ? " <- needs attention"
+                                     : r.qualityScore() <= 0.05 ? " ok" : "";
+                    System.out.printf("  %-25s %5d   %5.0f%%  %11.0f%%  %4.0f%%   %.2f%s%n",
+                            truncate(r.manifestKey(), 25),
+                            r.totalCalls(),
+                            r.retryRate() * 100,
+                            r.helpFollowupRate() * 100,
+                            r.errorRate() * 100,
+                            r.qualityScore(),
+                            indicator);
+                }
+
+                // Summary: top 3 needing attention
+                List<ManifestQualityRecord> needsAttention = records.stream()
+                        .filter(r -> r.qualityScore() >= 0.15)
+                        .limit(3)
+                        .toList();
+
+                if (!needsAttention.isEmpty()) {
+                    System.out.println();
+                    System.out.println("  Top " + needsAttention.size() + " needing attention:");
+                    for (ManifestQualityRecord r : needsAttention) {
+                        StringBuilder reason = new StringBuilder();
+                        if (r.retryRate() >= 0.20) reason.append("high retry rate (").append(String.format("%.0f%%", r.retryRate() * 100)).append(")");
+                        if (r.helpFollowupRate() >= 0.10) {
+                            if (!reason.isEmpty()) reason.append(" + ");
+                            reason.append("high help-followup (").append(String.format("%.0f%%", r.helpFollowupRate() * 100)).append(")");
+                        }
+                        if (r.errorRate() >= 0.15) {
+                            if (!reason.isEmpty()) reason.append(" + ");
+                            reason.append("error rate (").append(String.format("%.0f%%", r.errorRate() * 100)).append(")");
+                        }
+                        if (reason.isEmpty()) reason.append("composite score ").append(String.format("%.2f", r.qualityScore()));
+                        System.out.printf("    %-25s — %s%n", r.manifestKey(), reason);
+                    }
+                }
+
+                System.out.println();
+                System.out.println("  Tip: improve manifests at ~/.kcp/commands/<key>.yaml or submit a PR.");
+
+                return 0;
+            }
+        }
+
+        private static String truncate(String s, int max) {
+            if (s == null) return "?";
+            return s.length() <= max ? s : s.substring(0, max - 1) + "…";
+        }
     }
 
     // ------------------------------------------------------------------
