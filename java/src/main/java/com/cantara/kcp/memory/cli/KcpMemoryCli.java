@@ -16,9 +16,14 @@ import com.cantara.kcp.memory.store.ManifestQualityStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.store.ToolUsageStore;
+import com.cantara.kcp.memory.update.UpdateChecker;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.Callable;
 
@@ -28,7 +33,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = "0.17.0",
+        version = "0.18.0",
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
@@ -39,7 +44,8 @@ import java.util.concurrent.Callable;
                 KcpMemoryCli.AnalyzeCmd.class,
                 KcpMemoryCli.EventsCmd.class,
                 KcpMemoryCli.AgentsCmd.class,
-                KcpMemoryCli.McpCmd.class
+                KcpMemoryCli.McpCmd.class,
+                KcpMemoryCli.UpdateCmd.class
         }
 )
 public class KcpMemoryCli implements Callable<Integer> {
@@ -531,6 +537,84 @@ public class KcpMemoryCli implements Callable<Integer> {
             new McpServer(db).run();
             db.close();
             return 0;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // update — check for and install updates
+    // ------------------------------------------------------------------
+    @Command(name = "update", description = "Check for kcp-memory and kcp-commands updates and optionally install them")
+    static class UpdateCmd implements Callable<Integer> {
+
+        @Option(names = {"--check"}, description = "Only check; exit 1 if updates are available (scriptable)")
+        boolean checkOnly;
+
+        @Option(names = {"--yes", "-y"}, description = "Install without confirmation prompt")
+        boolean yes;
+
+        @Override
+        public Integer call() throws Exception {
+            UpdateChecker checker = new UpdateChecker();
+            String currentMem = McpServer.SERVER_VERSION;
+            String currentCmd = readCachedCmdVersion(currentMem);
+
+            System.out.println("Checking for updates...");
+            UpdateChecker.Versions v = checker.checkNow(currentMem, currentCmd);
+
+            System.out.printf("  kcp-memory    installed: %-10s  latest: %-10s  %s%n",
+                    v.currentMemory(), v.latestMemory(),
+                    v.memoryOutdated() ? "<-- UPDATE AVAILABLE" : "up to date");
+            System.out.printf("  kcp-commands  installed: %-10s  latest: %-10s  %s%n",
+                    v.currentCommands(), v.latestCommands(),
+                    v.commandsOutdated() ? "<-- UPDATE AVAILABLE" : "up to date");
+            System.out.println();
+
+            if (!v.anyOutdated()) {
+                System.out.println("Everything up to date.");
+                return 0;
+            }
+            if (checkOnly) {
+                return 1;
+            }
+
+            if (!yes) {
+                System.out.print("Download and install? [y/N] ");
+                String answer = new BufferedReader(new InputStreamReader(System.in)).readLine();
+                if (answer == null || !answer.strip().equalsIgnoreCase("y")) {
+                    System.out.println("Cancelled.");
+                    return 0;
+                }
+            }
+
+            Path kcpDir = Path.of(System.getProperty("user.home"), ".kcp");
+
+            if (v.memoryOutdated()) {
+                System.out.printf("Downloading kcp-memory-daemon.jar v%s...%n", v.latestMemory());
+                checker.downloadJar(UpdateChecker.MEM_REPO, UpdateChecker.MEM_JAR);
+                System.out.println("  done.");
+            }
+            if (v.commandsOutdated() && Files.exists(kcpDir.resolve(UpdateChecker.CMD_JAR))) {
+                System.out.printf("Downloading kcp-commands-daemon.jar v%s...%n", v.latestCommands());
+                checker.downloadJar(UpdateChecker.CMD_REPO, UpdateChecker.CMD_JAR);
+                System.out.println("  done.");
+            }
+
+            System.out.println("\nUpdated. Restart daemons to apply:");
+            System.out.println("  pkill -f 'kcp-memory.*daemon'; nohup java -jar ~/.kcp/kcp-memory-daemon.jar daemon > /tmp/kcp-memory-daemon.log 2>&1 &");
+            if (v.commandsOutdated() && Files.exists(kcpDir.resolve(UpdateChecker.CMD_JAR)))
+                System.out.println("  pkill -f kcp-commands-daemon; nohup java -jar ~/.kcp/kcp-commands-daemon.jar > /tmp/kcp-commands.log 2>&1 &");
+            return 0;
+        }
+
+        /** Best-effort read of kcp-commands version from the shared cache. */
+        private static String readCachedCmdVersion(String fallback) {
+            try {
+                Path cache = Path.of(System.getProperty("user.home"), ".kcp", "last-update-check");
+                if (Files.exists(cache))
+                    return new com.fasterxml.jackson.databind.ObjectMapper()
+                            .readTree(cache.toFile()).path("latestCommands").asText(fallback);
+            } catch (Exception ignored) {}
+            return fallback;
         }
     }
 

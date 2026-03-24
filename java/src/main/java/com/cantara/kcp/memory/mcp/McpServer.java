@@ -61,7 +61,7 @@ public class McpServer {
 
     private static final Logger LOG              = Logger.getLogger(McpServer.class.getName());
     private static final String PROTOCOL_VERSION = "2024-11-05";
-    public  static final String SERVER_VERSION   = "0.17.0";
+    public  static final String SERVER_VERSION   = "0.18.0";
 
     private final ObjectMapper   mapper = new ObjectMapper();
     private final MemoryDatabase db;

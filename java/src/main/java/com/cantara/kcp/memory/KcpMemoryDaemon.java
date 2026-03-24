@@ -1,10 +1,12 @@
 package com.cantara.kcp.memory;
 
 import com.cantara.kcp.memory.handler.*;
+import com.cantara.kcp.memory.mcp.McpServer;
 import com.cantara.kcp.memory.scanner.AgentSessionScanner;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
 import com.cantara.kcp.memory.store.MemoryDatabase;
+import com.cantara.kcp.memory.update.UpdateChecker;
 import com.sun.net.httpserver.HttpServer;
 
 import java.net.InetSocketAddress;
@@ -52,6 +54,22 @@ public class KcpMemoryDaemon {
 
         server.start();
         LOG.info("kcp-memory daemon started on port " + PORT);
+
+        // Startup update check — non-blocking, once per 24h
+        Thread.ofVirtual().start(() -> {
+            try {
+                String currentMem = McpServer.SERVER_VERSION;
+                UpdateChecker.Versions v = new UpdateChecker().checkIfDue(currentMem, currentMem);
+                if (v.memoryOutdated())
+                    LOG.warning("[kcp-memory] Update available: " + currentMem + " → " + v.latestMemory()
+                            + "  (run: java -jar ~/.kcp/kcp-memory-daemon.jar update)");
+                if (v.commandsOutdated())
+                    LOG.warning("[kcp-memory] kcp-commands update available: " + v.currentCommands()
+                            + " → " + v.latestCommands());
+            } catch (Exception e) {
+                LOG.fine("Update check failed: " + e.getMessage());
+            }
+        });
 
         // Initial scans on startup (includes agent sessions)
         Thread.ofVirtual().start(() -> {

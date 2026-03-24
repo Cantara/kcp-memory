@@ -1,5 +1,6 @@
 package com.cantara.kcp.memory.handler;
 
+import com.cantara.kcp.memory.mcp.McpServer;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.sun.net.httpserver.HttpExchange;
@@ -29,7 +30,7 @@ public class HealthHandler extends BaseHandler {
             sendJson(ex, 200, Map.of(
                     "status", "ok",
                     "sessions", stats.totalSessions(),
-                    "version", "0.5.0"
+                    "version", McpServer.SERVER_VERSION
             ));
         } catch (Exception e) {
             sendJson(ex, 200, Map.of("status", "degraded", "error", e.getMessage()));
