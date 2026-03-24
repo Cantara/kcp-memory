@@ -8,11 +8,12 @@ kcp-memory search "OAuth implementation"
 kcp-memory events search "kubectl apply"
 kcp-memory stats
 
-# MCP — Claude queries directly during a session (8 tools)
+# MCP — Claude queries directly during a session (9 tools)
 # Register once in ~/.claude/settings.json, then call inline:
 #   kcp_memory_search · kcp_memory_events_search · kcp_memory_list
 #   kcp_memory_stats · kcp_memory_session_detail · kcp_memory_project_context
 #   kcp_memory_subagent_search · kcp_memory_session_tree          (v0.5.0)
+#   kcp_memory_analyze                                            (v0.17.0)
 ```
 
 Part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
@@ -203,7 +204,7 @@ before every `kcp_memory_events_search` call.
 
 ## MCP server
 
-The MCP server exposes eight tools over stdio (JSON-RPC 2.0):
+The MCP server exposes nine tools over stdio (JSON-RPC 2.0):
 
 | Tool | What it answers |
 |------|----------------|
@@ -215,6 +216,7 @@ The MCP server exposes eight tools over stdio (JSON-RPC 2.0):
 | `kcp_memory_project_context` | Auto-detect current project from `PWD`, return recent sessions + events — call at session start. Accepts `session_limit` and `event_limit` params *(v0.4.0)* |
 | `kcp_memory_subagent_search` | FTS5 search within subagent transcripts — finds architectural discoveries, rejected approaches, and reasoning buried in delegated tasks *(v0.5.0)* |
 | `kcp_memory_session_tree` | Show a parent session and all its child subagents as a tree — reveals delegated scope and per-agent tool usage *(v0.5.0)* |
+| `kcp_memory_analyze` | Manifest quality metrics — retry rate, help-followup rate, error rate per manifest key. Set `by_version=true` to compare before/after a manifest improvement (requires kcp-commands v0.16.0+). *(v0.17.0)* |
 
 Registration (`~/.claude/settings.json`):
 
@@ -414,6 +416,7 @@ alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 | v0.5.0 | Subagent memory — indexes `subagents/agent-*.jsonl` files, parent-child session linking, `kcp_memory_subagent_search` + `kcp_memory_session_tree` MCP tools, `kcp-memory agents` CLI commands |
 | v0.7.0 | `kcp-memory analyze` — manifest quality feedback loop; reads indexed tool-call events and computes retry rate, help-followup rate, error rate, and composite quality score per manifest key. Pairs with kcp-commands v0.15.0 `exit_code_hint` events. |
 | v0.16.0 | **Manifest version tracking.** `kcp-memory analyze --by-version` groups quality metrics by `(manifest_key, manifest_version)` — SHA-256 content hash of the active YAML — enabling before/after comparison when a manifest is improved. Migration tracking added to schema so upgrades are safe on existing databases. Pairs with kcp-commands v0.16.0. |
+| v0.17.0 | **`kcp_memory_analyze` MCP tool** — 9th MCP tool. Claude can now call manifest quality analysis inline during a session without switching to the CLI. Supports `since_days`, `min_calls`, `top`, and `by_version` parameters. |
 
 ---
 
@@ -437,7 +440,7 @@ complementary — it makes the past retrievable and queryable.
 | **Reads** | 289 command manifests | `~/.claude/projects/**/*.jsonl` + `~/.kcp/events.jsonl` |
 | **Answers** | "How do I run this?" | "What did I do before?" |
 | **CLI** | — | `scan`, `search`, `list`, `stats`, `analyze` / `analyze --by-version` (v0.16.0), `events`, `agents` |
-| **MCP** | — | 8 tools (v0.5.0) |
+| **MCP** | — | 9 tools — includes `kcp_memory_analyze` (v0.17.0) |
 
 Both use `~/.kcp/` and are part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
 
