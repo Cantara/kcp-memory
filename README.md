@@ -119,7 +119,32 @@ kcp-memory stats
     Edit                       7,103
 ```
 
-### 6. Register as MCP server (v0.3.0)
+### 6. Analyze manifest quality (v0.7.0)
+
+Requires [kcp-commands v0.15.0](https://github.com/Cantara/kcp-commands) to be writing `exit_code_hint` fields to `~/.kcp/events.jsonl`.
+
+```bash
+kcp-memory analyze
+kcp-memory analyze --top 10 --since 30 --min-calls 5
+```
+
+Reads indexed tool-call events and computes per-manifest quality metrics — retry rate (same manifest called twice within 90s), help-followup rate (agent ran `--help` after getting a manifest), and error rate (output_preview contains error signals). Outputs a ranked table of manifests needing attention:
+
+```
+[kcp-memory] manifest quality analysis — 47 manifests, 1,234 total calls
+
+  MANIFEST KEY         CALLS   RETRIES  HELP-FOLLOWUP  ERRORS   SCORE
+  ──────────────────────────────────────────────────────────────────────
+  kubectl-apply          34      38%         12%         22%     0.31  ← needs attention
+  terraform               28      29%         18%          7%     0.24
+  mvn                     87       8%          2%          3%     0.05  ok
+
+  Tip: improve manifests at ~/.kcp/commands/<key>.yaml or submit a PR.
+```
+
+Options: `--top N` (default 20), `--since DAYS` (default 30), `--min-calls N` (default 5, filters low-signal manifests).
+
+### 7. Register as MCP server (v0.3.0)
 
 Add to `~/.claude/settings.json`:
 
@@ -369,6 +394,7 @@ alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 | v0.3.0 | MCP server — `kcp-memory mcp` subcommand; four MCP tools for Claude Code inline use |
 | v0.4.0 | `kcp_memory_session_detail` (find → read flow) + `kcp_memory_project_context` (proactive session-start context from `PWD`) |
 | v0.5.0 | Subagent memory — indexes `subagents/agent-*.jsonl` files, parent-child session linking, `kcp_memory_subagent_search` + `kcp_memory_session_tree` MCP tools, `kcp-memory agents` CLI commands |
+| v0.7.0 | `kcp-memory analyze` — manifest quality feedback loop; reads indexed tool-call events and computes retry rate, help-followup rate, error rate, and composite quality score per manifest key. Pairs with kcp-commands v0.15.0 `exit_code_hint` events. |
 
 ---
 
@@ -389,8 +415,9 @@ complementary — it makes the past retrievable and queryable.
 | **Port** | 7734 | 7735 |
 | **Hook** | PreToolUse | PostToolUse |
 | **Stores** | Nothing (stateless) | `~/.kcp/memory.db` (SQLite) |
-| **Reads** | 283 command manifests | `~/.claude/projects/**/*.jsonl` + `~/.kcp/events.jsonl` |
+| **Reads** | 289 command manifests | `~/.claude/projects/**/*.jsonl` + `~/.kcp/events.jsonl` |
 | **Answers** | "How do I run this?" | "What did I do before?" |
+| **CLI** | — | `scan`, `search`, `list`, `stats`, `analyze` (v0.7.0), `events`, `agents` |
 | **MCP** | — | 8 tools (v0.5.0) |
 
 Both use `~/.kcp/` and are part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
