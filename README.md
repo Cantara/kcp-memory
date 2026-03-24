@@ -119,7 +119,7 @@ kcp-memory stats
     Edit                       7,103
 ```
 
-### 6. Analyze manifest quality (v0.7.0)
+### 6. Analyze manifest quality (v0.7.0) + version tracking (v0.16.0)
 
 Requires [kcp-commands v0.15.0](https://github.com/Cantara/kcp-commands) to be writing `exit_code_hint` fields to `~/.kcp/events.jsonl`.
 
@@ -143,6 +143,24 @@ Reads indexed tool-call events and computes per-manifest quality metrics — ret
 ```
 
 Options: `--top N` (default 20), `--since DAYS` (default 30), `--min-calls N` (default 5, filters low-signal manifests).
+
+#### Before/after version comparison (v0.16.0)
+
+Requires [kcp-commands v0.16.0](https://github.com/Cantara/kcp-commands) to be writing `manifest_version` fields (SHA-256 content hash of the active YAML).
+
+```bash
+kcp-memory analyze --by-version
+```
+
+Groups metrics by `(manifest_key, manifest_version)` so you can see whether a manifest improvement actually reduced retries and errors:
+
+```
+kubectl-apply:
+  [a3f8c2d1]  2026-03-01 → 2026-03-20   calls=34  retry=38%  score=0.31  ← before
+  [b7e1a920]  2026-03-21 → present       calls=12  retry=12%  score=0.08  ↓ 0.23
+```
+
+Events before v0.16.0 show as `[unknown]`. The hash changes automatically when the YAML file content changes — no manual tagging required.
 
 ### 7. Register as MCP server (v0.3.0)
 
@@ -276,7 +294,7 @@ PreToolUse hook. On every Bash tool call, kcp-commands appends a JSON event to
 `~/.kcp/events.jsonl`:
 
 ```json
-{"ts":"2026-03-03T14:32:01Z","session_id":"abc123","project_dir":"/src/myapp","tool":"Bash","command":"kubectl apply -f deploy.yaml","manifest_key":"kubectl-apply"}
+{"ts":"2026-03-03T14:32:01Z","session_id":"abc123","project_dir":"/src/myapp","tool":"Bash","command":"kubectl apply -f deploy.yaml","manifest_key":"kubectl-apply","manifest_version":"cabf7009"}
 ```
 
 kcp-memory reads this file using a byte-offset cursor — each scan reads only the bytes
@@ -395,6 +413,7 @@ alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 | v0.4.0 | `kcp_memory_session_detail` (find → read flow) + `kcp_memory_project_context` (proactive session-start context from `PWD`) |
 | v0.5.0 | Subagent memory — indexes `subagents/agent-*.jsonl` files, parent-child session linking, `kcp_memory_subagent_search` + `kcp_memory_session_tree` MCP tools, `kcp-memory agents` CLI commands |
 | v0.7.0 | `kcp-memory analyze` — manifest quality feedback loop; reads indexed tool-call events and computes retry rate, help-followup rate, error rate, and composite quality score per manifest key. Pairs with kcp-commands v0.15.0 `exit_code_hint` events. |
+| v0.16.0 | **Manifest version tracking.** `kcp-memory analyze --by-version` groups quality metrics by `(manifest_key, manifest_version)` — SHA-256 content hash of the active YAML — enabling before/after comparison when a manifest is improved. Migration tracking added to schema so upgrades are safe on existing databases. Pairs with kcp-commands v0.16.0. |
 
 ---
 
@@ -417,7 +436,7 @@ complementary — it makes the past retrievable and queryable.
 | **Stores** | Nothing (stateless) | `~/.kcp/memory.db` (SQLite) |
 | **Reads** | 289 command manifests | `~/.claude/projects/**/*.jsonl` + `~/.kcp/events.jsonl` |
 | **Answers** | "How do I run this?" | "What did I do before?" |
-| **CLI** | — | `scan`, `search`, `list`, `stats`, `analyze` (v0.7.0), `events`, `agents` |
+| **CLI** | — | `scan`, `search`, `list`, `stats`, `analyze` / `analyze --by-version` (v0.16.0), `events`, `agents` |
 | **MCP** | — | 8 tools (v0.5.0) |
 
 Both use `~/.kcp/` and are part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).

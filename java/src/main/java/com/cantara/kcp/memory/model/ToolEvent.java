@@ -11,7 +11,8 @@ public record ToolEvent(
         String projectDir,
         String tool,
         String command,
-        String manifestKey,    // null if kcp-commands had no manifest for this command
-        String outputPreview,  // first 200 chars of tool output; null if not captured (v0.6.0)
+        String manifestKey,       // null if kcp-commands had no manifest for this command
+        String outputPreview,     // first 200 chars of tool output; null if not captured (v0.6.0)
+        String manifestVersion,   // SHA-256 first 8 hex chars of the active manifest YAML (v0.8.0); null for older events
         String ingestedAt
 ) {}

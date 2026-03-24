@@ -4,6 +4,7 @@ import com.cantara.kcp.memory.KcpMemoryDaemon;
 import com.cantara.kcp.memory.mcp.McpServer;
 import com.cantara.kcp.memory.model.AgentSession;
 import com.cantara.kcp.memory.model.ManifestQualityRecord;
+import com.cantara.kcp.memory.model.ManifestVersionRecord;
 import com.cantara.kcp.memory.model.SearchResult;
 import com.cantara.kcp.memory.model.ToolEvent;
 import com.cantara.kcp.memory.scanner.AgentSessionScanner;
@@ -27,7 +28,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = "0.7.0",
+        version = "0.16.0",
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
@@ -230,6 +231,9 @@ public class KcpMemoryCli implements Callable<Integer> {
         @Option(names = {"--min-calls"}, description = "Exclude manifests with fewer than N calls (default: 5)", defaultValue = "5")
         int minCalls;
 
+        @Option(names = {"--by-version"}, description = "Group results by manifest version (content hash) to compare before/after improvements")
+        boolean byVersion;
+
         @Override
         public Integer call() throws Exception {
             try (MemoryDatabase db = new MemoryDatabase()) {
@@ -237,8 +241,12 @@ public class KcpMemoryCli implements Callable<Integer> {
                 new EventLogScanner(db).scan();
 
                 ManifestQualityStore store = new ManifestQualityStore(db);
-                int totalManifests   = store.countManifests();
-                long totalCalls      = store.countManifestCalls();
+                int  totalManifests = store.countManifests();
+                long totalCalls     = store.countManifestCalls();
+
+                if (byVersion) {
+                    return callByVersion(store, totalManifests, totalCalls);
+                }
 
                 List<ManifestQualityRecord> records = store.analyze(sinceDays, minCalls, top);
 
@@ -301,6 +309,52 @@ public class KcpMemoryCli implements Callable<Integer> {
 
                 return 0;
             }
+        }
+
+        private int callByVersion(ManifestQualityStore store, int totalManifests, long totalCalls) throws Exception {
+            List<ManifestVersionRecord> records = store.analyzeByVersion(sinceDays, minCalls);
+
+            System.out.printf("[kcp-memory] manifest quality by version — %d manifests, %,d total calls%n%n",
+                    totalManifests, totalCalls);
+
+            if (records.isEmpty()) {
+                System.out.println("  No manifests with enough data (min " + minCalls + " calls in last " + sinceDays + " days).");
+                return 0;
+            }
+
+            String today = java.time.LocalDate.now().toString();
+            String currentKey = null;
+            double prevScore  = Double.NaN;
+
+            for (ManifestVersionRecord r : records) {
+                if (!r.manifestKey().equals(currentKey)) {
+                    if (currentKey != null) System.out.println();
+                    System.out.println(r.manifestKey() + ":");
+                    currentKey = r.manifestKey();
+                    prevScore  = Double.NaN;
+                }
+
+                String dateTo = r.lastSeen().equals(today) ? "present" : r.lastSeen();
+                String diff   = "";
+                if (!Double.isNaN(prevScore)) {
+                    double delta = r.qualityScore() - prevScore;
+                    diff = String.format("  %s %.2f", delta <= 0 ? "↓" : "↑", Math.abs(delta));
+                } else {
+                    diff = "  ← before";
+                }
+
+                System.out.printf("  [%s]  %s → %-10s  calls=%d  retry=%.0f%%  score=%.2f%s%n",
+                        r.manifestVersion(),
+                        r.firstSeen(), dateTo,
+                        r.totalCalls(),
+                        r.retryRate() * 100,
+                        r.qualityScore(),
+                        diff);
+
+                prevScore = r.qualityScore();
+            }
+            System.out.println();
+            return 0;
         }
 
         private static String truncate(String s, int max) {

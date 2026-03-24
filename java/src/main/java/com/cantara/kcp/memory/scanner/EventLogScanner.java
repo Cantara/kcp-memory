@@ -109,6 +109,8 @@ public class EventLogScanner {
                                 node.path("manifest_key").isNull() ? null
                                         : node.path("manifest_key").asText(null),
                                 null,  // outputPreview — populated later by output line
+                                node.path("manifest_version").isNull() ? null
+                                        : node.path("manifest_version").asText(null),
                                 null
                         );
 

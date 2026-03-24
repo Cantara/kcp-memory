@@ -23,8 +23,8 @@ public class EventStore {
     public void insert(ToolEvent e) throws SQLException {
         String sql = """
                 INSERT OR IGNORE INTO tool_events
-                    (event_ts, session_id, project_dir, tool, command, manifest_key, ingested_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (event_ts, session_id, project_dir, tool, command, manifest_key, manifest_version, ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """;
         try (PreparedStatement ps = db.getConnection().prepareStatement(sql)) {
             ps.setString(1, e.eventTs());
@@ -33,7 +33,8 @@ public class EventStore {
             ps.setString(4, e.tool());
             ps.setString(5, e.command());
             ps.setString(6, e.manifestKey());
-            ps.setString(7, Instant.now().toString());
+            ps.setString(7, e.manifestVersion());
+            ps.setString(8, Instant.now().toString());
             ps.executeUpdate();
         }
     }
@@ -136,6 +137,7 @@ public class EventStore {
                 rs.getString("command"),
                 rs.getString("manifest_key"),
                 rs.getString("output_preview"),
+                rs.getString("manifest_version"),
                 rs.getString("ingested_at")
         );
     }

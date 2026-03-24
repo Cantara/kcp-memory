@@ -48,11 +48,45 @@ public class MemoryDatabase implements AutoCloseable {
     }
 
     private void initSchema() throws SQLException {
+        // Bootstrap the migration tracking table (always idempotent)
+        boolean trackingTableNew;
+        try (Statement st = connection.createStatement()) {
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS schema_migrations (
+                        version TEXT PRIMARY KEY,
+                        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                    """);
+            try (java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM schema_migrations")) {
+                trackingTableNew = rs.next() && rs.getLong(1) == 0;
+            }
+        }
+
+        // If this is an existing DB that predates migration tracking, detect and record
+        // already-applied migrations based on structural evidence rather than re-running them.
+        if (trackingTableNew) {
+            backfillMigrationTracking();
+        }
+
         for (String resource : new String[]{
                 "/db/V1__initial_schema.sql",
                 "/db/V2__tool_events.sql",
                 "/db/V3__agent_sessions.sql",
-                "/db/V4__output_preview.sql"}) {
+                "/db/V4__output_preview.sql",
+                "/db/V5__manifest_version.sql"}) {
+
+            String version = resource.substring(resource.lastIndexOf('/') + 1, resource.lastIndexOf('.'));
+
+            boolean alreadyApplied;
+            try (java.sql.PreparedStatement ps = connection.prepareStatement(
+                    "SELECT 1 FROM schema_migrations WHERE version = ?")) {
+                ps.setString(1, version);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    alreadyApplied = rs.next();
+                }
+            }
+            if (alreadyApplied) continue;
+
             String sql = loadResource(resource);
             for (String stmt : splitStatements(sql)) {
                 String trimmed = stmt.trim();
@@ -60,6 +94,48 @@ public class MemoryDatabase implements AutoCloseable {
                     try (Statement st = connection.createStatement()) {
                         st.execute(trimmed);
                     }
+                }
+            }
+
+            try (java.sql.PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO schema_migrations (version) VALUES (?)")) {
+                ps.setString(1, version);
+                ps.executeUpdate();
+            }
+        }
+    }
+
+    /**
+     * Backfill migration tracking for databases that predate the schema_migrations table.
+     * Detects already-applied migrations by checking structural evidence (tables/columns).
+     */
+    private void backfillMigrationTracking() throws SQLException {
+        record MigrationCheck(String version, String checkSql) {}
+        var checks = List.of(
+                new MigrationCheck("V1__initial_schema",
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"),
+                new MigrationCheck("V2__tool_events",
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tool_events'"),
+                new MigrationCheck("V3__agent_sessions",
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_sessions'"),
+                new MigrationCheck("V4__output_preview",
+                        "SELECT 1 FROM pragma_table_info('tool_events') WHERE name='output_preview'"),
+                new MigrationCheck("V5__manifest_version",
+                        "SELECT 1 FROM pragma_table_info('tool_events') WHERE name='manifest_version'")
+        );
+        for (MigrationCheck check : checks) {
+            boolean present;
+            try (Statement st = connection.createStatement();
+                 java.sql.ResultSet rs = st.executeQuery(check.checkSql())) {
+                present = rs.next();
+            } catch (SQLException ignored) {
+                present = false;
+            }
+            if (present) {
+                try (java.sql.PreparedStatement ps = connection.prepareStatement(
+                        "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)")) {
+                    ps.setString(1, check.version());
+                    ps.executeUpdate();
                 }
             }
         }
