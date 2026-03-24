@@ -1,6 +1,8 @@
 package com.cantara.kcp.memory.mcp;
 
 import com.cantara.kcp.memory.model.AgentSession;
+import com.cantara.kcp.memory.model.ManifestQualityRecord;
+import com.cantara.kcp.memory.model.ManifestVersionRecord;
 import com.cantara.kcp.memory.model.SearchResult;
 import com.cantara.kcp.memory.model.Session;
 import com.cantara.kcp.memory.model.ToolEvent;
@@ -9,6 +11,7 @@ import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
 import com.cantara.kcp.memory.store.AgentSessionStore;
 import com.cantara.kcp.memory.store.EventStore;
+import com.cantara.kcp.memory.store.ManifestQualityStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.store.ToolUsageStore;
@@ -51,13 +54,14 @@ import java.util.logging.Logger;
  *   <li>kcp_memory_project_context — auto-detect project from PWD, return last 5 sessions + 20 events (v0.4.0)</li>
  *   <li>kcp_memory_subagent_search — FTS5 search within subagent transcripts (v0.5.0)</li>
  *   <li>kcp_memory_session_tree    — parent session + all child agents as a tree (v0.5.0)</li>
+ *   <li>kcp_memory_analyze        — manifest quality metrics: retry/help/error rates per manifest key (v0.16.0)</li>
  * </ul>
  */
 public class McpServer {
 
     private static final Logger LOG              = Logger.getLogger(McpServer.class.getName());
     private static final String PROTOCOL_VERSION = "2024-11-05";
-    public  static final String SERVER_VERSION   = "0.5.0";
+    public  static final String SERVER_VERSION   = "0.16.0";
 
     private final ObjectMapper   mapper = new ObjectMapper();
     private final MemoryDatabase db;
@@ -215,6 +219,20 @@ public class McpServer {
                         .required("session_id", "string", "Parent session ID from kcp_memory_search or kcp_memory_list")
         ));
 
+        tools.add(tool(
+                "kcp_memory_analyze",
+                "Analyze manifest quality — surface which kcp-commands manifests correlate with retries " +
+                "(same command run again within 90s), help-followups (agent ran --help within 5min), and " +
+                "errors. Use this to find which manifests most need improvement. " +
+                "Set by_version=true to compare quality before and after a manifest was changed " +
+                "(requires kcp-commands v0.16.0). Added in v0.16.0.",
+                schema()
+                        .optional("since_days",  "integer", "Only consider events from the last N days (default 30)")
+                        .optional("min_calls",   "integer", "Exclude manifests with fewer than N calls (default 5)")
+                        .optional("top",         "integer", "Return at most N results (default 20)")
+                        .optional("by_version",  "boolean", "Group by manifest content hash to compare before/after improvements")
+        ));
+
         return result;
     }
 
@@ -246,6 +264,7 @@ public class McpServer {
                 case "kcp_memory_project_context" -> toolProjectContext(args);
                 case "kcp_memory_subagent_search" -> toolSubagentSearch(args);
                 case "kcp_memory_session_tree"    -> toolSessionTree(args);
+                case "kcp_memory_analyze"         -> toolAnalyze(args);
                 default                            -> "Unknown tool: " + name;
             };
         } catch (Exception e) {
@@ -494,6 +513,73 @@ public class McpServer {
                     sb.append("  │  \"").append(msg).append("\"\n");
                 }
                 sb.append("  │\n");
+            }
+        }
+        return sb.toString();
+    }
+
+    private String toolAnalyze(JsonNode args) throws Exception {
+        int sinceDays = args.path("since_days").asInt(30);
+        int minCalls  = args.path("min_calls").asInt(5);
+        int top       = args.path("top").asInt(20);
+        boolean byVersion = args.path("by_version").asBoolean(false);
+
+        new EventLogScanner(db).scan();
+        ManifestQualityStore store = new ManifestQualityStore(db);
+        int  totalManifests = store.countManifests();
+        long totalCalls     = store.countManifestCalls();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("Manifest quality — %d manifests, %,d total calls (last %d days, min %d calls)%n%n",
+                totalManifests, totalCalls, sinceDays, minCalls));
+
+        if (byVersion) {
+            List<ManifestVersionRecord> records = store.analyzeByVersion(sinceDays, minCalls);
+            if (records.isEmpty()) {
+                sb.append("No data. Run kcp-commands v0.16.0+ to generate manifest_version events.");
+                return sb.toString();
+            }
+            String today      = java.time.LocalDate.now().toString();
+            String currentKey = null;
+            double prevScore  = Double.NaN;
+            for (ManifestVersionRecord r : records) {
+                if (!r.manifestKey().equals(currentKey)) {
+                    if (currentKey != null) sb.append("\n");
+                    sb.append(r.manifestKey()).append(":\n");
+                    currentKey = r.manifestKey();
+                    prevScore  = Double.NaN;
+                }
+                String dateTo = r.lastSeen().equals(today) ? "present" : r.lastSeen();
+                String diff   = Double.isNaN(prevScore) ? "  ← before"
+                        : String.format("  %s %.2f", (r.qualityScore() - prevScore) <= 0 ? "↓" : "↑",
+                                Math.abs(r.qualityScore() - prevScore));
+                sb.append(String.format("  [%s]  %s → %-10s  calls=%d  retry=%.0f%%  score=%.2f%s%n",
+                        r.manifestVersion(), r.firstSeen(), dateTo,
+                        r.totalCalls(), r.retryRate() * 100, r.qualityScore(), diff));
+                prevScore = r.qualityScore();
+            }
+        } else {
+            List<ManifestQualityRecord> records = store.analyze(sinceDays, minCalls, top);
+            if (records.isEmpty()) {
+                sb.append("No manifests with enough data. Needs kcp-commands v0.9.0+ generating events.");
+                return sb.toString();
+            }
+            sb.append(String.format("  %-25s %5s   %7s  %13s  %6s   %5s%n",
+                    "MANIFEST KEY", "CALLS", "RETRIES", "HELP-FOLLOWUP", "ERRORS", "SCORE"));
+            sb.append("  ").append("─".repeat(72)).append("\n");
+            for (ManifestQualityRecord r : records) {
+                String flag = r.qualityScore() >= 0.20 ? "  ← needs attention"
+                            : r.qualityScore() <= 0.05 ? "  ok" : "";
+                sb.append(String.format("  %-25s %5d   %5.0f%%  %11.0f%%  %4.0f%%   %.2f%s%n",
+                        r.manifestKey().length() <= 25 ? r.manifestKey()
+                                : r.manifestKey().substring(0, 24) + "…",
+                        r.totalCalls(),
+                        r.retryRate() * 100, r.helpFollowupRate() * 100,
+                        r.errorRate() * 100, r.qualityScore(), flag));
+            }
+            long needsAttention = records.stream().filter(r -> r.qualityScore() >= 0.20).count();
+            if (needsAttention > 0) {
+                sb.append(String.format("%n  %d manifest(s) need attention. Improve at ~/.kcp/commands/<key>.yaml%n", needsAttention));
             }
         }
         return sb.toString();
