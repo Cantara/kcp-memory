@@ -33,7 +33,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = "0.18.0",
+        version = "0.19.0",
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
