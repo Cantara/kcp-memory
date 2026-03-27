@@ -211,7 +211,7 @@ The MCP server exposes nine tools over stdio (JSON-RPC 2.0):
 | `kcp_memory_search` | "What did we do with OAuth last month?" — FTS5 over session transcripts |
 | `kcp_memory_events_search` | "Which projects did I run `kubectl apply` in?" — FTS5 over tool-call events |
 | `kcp_memory_list` | Recent sessions, optionally filtered by project directory |
-| `kcp_memory_stats` | Total sessions, turns, tool calls, date range, top tools |
+| `kcp_memory_stats` | Total sessions, turns, tool calls, date range, top tools. Also includes `kcpBridgeUsage` (searches, units fetched, tokens saved, top units) if `~/.kcp/usage.db` exists (RFC-0017). |
 | `kcp_memory_session_detail` | Full content of a specific session — user messages, files touched, tools used *(v0.4.0)* |
 | `kcp_memory_project_context` | Auto-detect current project from `PWD`, return recent sessions + events — call at session start. Accepts `session_limit` and `event_limit` params *(v0.4.0)* |
 | `kcp_memory_subagent_search` | FTS5 search within subagent transcripts — finds architectural discoveries, rejected approaches, and reasoning buried in delegated tasks *(v0.5.0)* |
