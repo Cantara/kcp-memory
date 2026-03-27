@@ -446,6 +446,8 @@ complementary — it makes the past retrievable and queryable.
 
 Both use `~/.kcp/` and are part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
 
+**[kcp-dashboard](https://github.com/Cantara/kcp-dashboard)** is the live terminal dashboard for KCP usage statistics. It reads `~/.kcp/usage.db` (written by the kcp-mcp bridge per RFC-0017) and surfaces the same data as `kcp_memory_stats` in a Bubble Tea TUI — queries served, tokens saved, top units with bar chart, recent queries. Refreshes every 2 seconds. Single Go binary, no runtime deps.
+
 ---
 
 ## Building from source
