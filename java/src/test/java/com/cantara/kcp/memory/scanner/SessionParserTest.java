@@ -39,6 +39,35 @@ class SessionParserTest {
         assertTrue(s.getFiles().contains("/src/myapp/src/auth.ts"));
     }
 
+    /**
+     * Regression test for v0.21.0: Claude Code transcripts use type="user" for human messages,
+     * not "human". Before the fix, first_message and all_user_text were always NULL for real
+     * Claude Code sessions, making FTS return 0 results.
+     */
+    @Test
+    void parsesClaudeJsonlSessions_userType(@TempDir Path tmp) throws Exception {
+        String jsonl = """
+                {"type":"user","timestamp":"2026-03-01T10:00:00Z","message":{"content":[{"type":"text","text":"How do I add authentication?"}]},"cwd":"/src/myapp","sessionId":"sess-usertype"}
+                {"type":"assistant","timestamp":"2026-03-01T10:00:05Z","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/myapp/auth.ts"}}]}}
+                {"type":"user","timestamp":"2026-03-01T10:01:00Z","message":{"content":[{"type":"text","text":"Can you also update the tests?"}]}}
+                """;
+
+        Path file = tmp.resolve("sess-usertype.jsonl");
+        Files.writeString(file, jsonl);
+
+        Optional<SessionParser.ParseResult> result = parser.parse(file, "my-project");
+        assertTrue(result.isPresent());
+
+        Session s = result.get().session();
+        assertEquals("sess-usertype", s.getSessionId());
+        assertEquals("/src/myapp", s.getProjectDir());
+        // first_message must NOT be null — this was the v0.21.0 regression
+        assertNotNull(s.getFirstMessage(), "first_message must be populated for type=user sessions");
+        assertEquals("How do I add authentication?", s.getFirstMessage());
+        assertNotNull(s.getAllUserText(), "all_user_text must be populated for type=user sessions");
+        assertTrue(s.getAllUserText().contains("tests"), "all_user_text must accumulate all user messages");
+    }
+
     @Test
     void parsesGeminiJsonSessions(@TempDir Path tmp) throws Exception {
         Path chatsDir = Files.createDirectories(tmp.resolve("kcp-dogfood-queue").resolve("chats"));
