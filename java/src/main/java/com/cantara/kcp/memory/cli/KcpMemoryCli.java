@@ -2,6 +2,7 @@ package com.cantara.kcp.memory.cli;
 
 import com.cantara.kcp.memory.KcpMemoryDaemon;
 import com.cantara.kcp.memory.mcp.McpServer;
+import com.cantara.kcp.memory.mcp.UsageLogger;
 import com.cantara.kcp.memory.model.AgentSession;
 import com.cantara.kcp.memory.model.ManifestQualityRecord;
 import com.cantara.kcp.memory.model.ManifestVersionRecord;
@@ -33,7 +34,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = "0.19.0",
+        version = "0.21.0",
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
@@ -135,6 +136,7 @@ public class KcpMemoryCli implements Callable<Integer> {
             try (MemoryDatabase db = new MemoryDatabase()) {
                 SessionStore store = new SessionStore(db);
                 List<SearchResult> results = store.search(query, limit);
+                UsageLogger.logSearchSync(query, results.size());
                 if (results.isEmpty()) {
                     System.out.println("[kcp-memory] no results for: " + query);
                     return 0;
@@ -399,6 +401,8 @@ public class KcpMemoryCli implements Callable<Integer> {
 
                     EventStore store = new EventStore(db);
                     List<ToolEvent> results = store.search(query, limit);
+                    UsageLogger.logSearch(query, results.size());
+                    Thread.sleep(400); // let virtual thread flush to DB before JVM exit (daemon thread)
                     if (results.isEmpty()) {
                         System.out.println("[kcp-memory] no events for: " + query);
                         return 0;

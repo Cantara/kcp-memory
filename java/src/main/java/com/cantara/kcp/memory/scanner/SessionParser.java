@@ -67,7 +67,7 @@ public class SessionParser {
             acc.captureTimestamp(ts);
 
             String type = text(node, "type");
-            if ("human".equals(type)) {
+            if ("human".equals(type) || "user".equals(type)) {
                 acc.addUserText(extractClaudeMessageText(node));
             } else if ("assistant".equals(type)) {
                 JsonNode message = node.path("message");

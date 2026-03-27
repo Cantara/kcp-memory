@@ -27,7 +27,7 @@ public final class UsageLogger {
 
     private UsageLogger() {}
 
-    /** Log a search event asynchronously — returns immediately. */
+    /** Log a search event asynchronously — returns immediately. Use in long-lived processes. */
     public static void logSearch(String query, int resultCount) {
         Thread.ofVirtual().start(() -> {
             try {
@@ -38,6 +38,17 @@ public final class UsageLogger {
                 System.err.println("[kcp-memory UsageLogger] search failed: " + e);
             }
         });
+    }
+
+    /** Log a search event synchronously — blocks until written. Use in CLI (short-lived) processes. */
+    public static void logSearchSync(String query, int resultCount) {
+        try {
+            ensureSchema();
+            String project = projectFromPwd();
+            insert("search", project, query, null, resultCount, null, null, null);
+        } catch (Exception e) {
+            System.err.println("[kcp-memory UsageLogger] search failed: " + e);
+        }
     }
 
     /** Log a get_unit event asynchronously — returns immediately. */
