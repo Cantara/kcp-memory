@@ -418,6 +418,7 @@ alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 | v0.16.0 | **Manifest version tracking.** `kcp-memory analyze --by-version` groups quality metrics by `(manifest_key, manifest_version)` — SHA-256 content hash of the active YAML — enabling before/after comparison when a manifest is improved. Migration tracking added to schema so upgrades are safe on existing databases. Pairs with kcp-commands v0.16.0. |
 | v0.17.0 | **`kcp_memory_analyze` MCP tool** — 9th MCP tool. Claude can now call manifest quality analysis inline during a session without switching to the CLI. Supports `since_days`, `min_calls`, `top`, and `by_version` parameters. |
 | v0.18.0 | **Auto-update.** New `update` subcommand with `--check` (scriptable, exit 1 if update available) and `--yes` (non-interactive) flags. Updates both kcp-memory and kcp-commands JARs. Startup update notification on first run each day (24h-rate-limited, shared `~/.kcp/last-update-check` cache). Fix: `GET /health` now returns the real version string (was hardcoded `"0.5.0"`). |
+| v0.19.0 | **RFC-0017 bridge usage in stats.** `GET /stats` (and `kcp_memory_stats` MCP tool) now includes a `kcpBridgeUsage` block when `~/.kcp/usage.db` exists — total searches, units fetched, tokens saved, and top 5 most-accessed units. Completes the observability loop: bridge writes events, kcp-memory surfaces the aggregate view. |
 
 ---
 
