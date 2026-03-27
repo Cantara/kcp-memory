@@ -61,7 +61,7 @@ public class McpServer {
 
     private static final Logger LOG              = Logger.getLogger(McpServer.class.getName());
     private static final String PROTOCOL_VERSION = "2024-11-05";
-    public  static final String SERVER_VERSION   = "0.19.0";
+    public  static final String SERVER_VERSION   = "0.20.0";
 
     private final ObjectMapper   mapper = new ObjectMapper();
     private final MemoryDatabase db;
@@ -290,6 +290,8 @@ public class McpServer {
         SessionStore       store   = new SessionStore(db);
         List<SearchResult> results = store.search(query, limit);
 
+        UsageLogger.logSearch(query, results.size());
+
         if (results.isEmpty()) return "No sessions found for: " + query;
 
         StringBuilder sb = new StringBuilder();
@@ -308,6 +310,8 @@ public class McpServer {
 
         EventStore       store   = new EventStore(db);
         List<ToolEvent>  results = store.search(query, limit);
+
+        UsageLogger.logSearch(query, results.size());
 
         if (results.isEmpty())
             return "No events found for: " + query +
@@ -361,6 +365,7 @@ public class McpServer {
         if (sessionId.isEmpty()) return "Error: session_id is required";
 
         Session s = new SessionStore(db).getById(sessionId);
+        UsageLogger.logGet(sessionId);
         if (s == null) return "Session not found: " + sessionId;
 
         StringBuilder sb = new StringBuilder();
