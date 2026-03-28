@@ -8,12 +8,13 @@ kcp-memory search "OAuth implementation"
 kcp-memory events search "kubectl apply"
 kcp-memory stats
 
-# MCP — Claude queries directly during a session (9 tools)
+# MCP — Claude queries directly during a session (10 tools)
 # Register once in ~/.claude/settings.json, then call inline:
 #   kcp_memory_search · kcp_memory_events_search · kcp_memory_list
 #   kcp_memory_stats · kcp_memory_session_detail · kcp_memory_project_context
 #   kcp_memory_subagent_search · kcp_memory_session_tree          (v0.5.0)
 #   kcp_memory_analyze                                            (v0.17.0)
+#   kcp_memory_stats (includes RFC-0017 bridge usage)             (v0.19.0)
 ```
 
 Part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
@@ -45,6 +46,9 @@ curl -fsSL https://raw.githubusercontent.com/Cantara/kcp-memory/main/bin/install
 Downloads the JAR to `~/.kcp/`, starts the daemon on port 7735, and runs an initial scan of `~/.claude/projects/`.
 
 ### 2. Index your sessions
+
+> **Upgrading from v0.20.0 or earlier?** Run `kcp-memory scan --force` after upgrading.
+> v0.21.0 fixed a bug where `SessionParser` only accepted `"human"` message type but Claude Code sends `"user"` — all sessions had NULL `first_message` and FTS returned 0 results. A force-scan repopulates the data.
 
 ```bash
 kcp-memory scan
@@ -204,7 +208,7 @@ before every `kcp_memory_events_search` call.
 
 ## MCP server
 
-The MCP server exposes nine tools over stdio (JSON-RPC 2.0):
+The MCP server exposes ten tools over stdio (JSON-RPC 2.0):
 
 | Tool | What it answers |
 |------|----------------|
@@ -397,10 +401,16 @@ cat /tmp/kcp-memory-daemon.log
 
 ## CLI alias
 
-Add to `~/.bashrc` or `~/.zshrc`:
+The CLI binary is **not** installed to `PATH`. To use `kcp-memory` as a command, add an alias to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
+alias kcp-memory='java --enable-native-access=ALL-UNNAMED -jar ~/.kcp/kcp-memory-daemon.jar'
+```
+
+Without the alias, invoke directly:
+
+```bash
+java --enable-native-access=ALL-UNNAMED -jar ~/.kcp/kcp-memory-daemon.jar search "query"
 ```
 
 ---
@@ -418,7 +428,10 @@ alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
 | v0.16.0 | **Manifest version tracking.** `kcp-memory analyze --by-version` groups quality metrics by `(manifest_key, manifest_version)` — SHA-256 content hash of the active YAML — enabling before/after comparison when a manifest is improved. Migration tracking added to schema so upgrades are safe on existing databases. Pairs with kcp-commands v0.16.0. |
 | v0.17.0 | **`kcp_memory_analyze` MCP tool** — 9th MCP tool. Claude can now call manifest quality analysis inline during a session without switching to the CLI. Supports `since_days`, `min_calls`, `top`, and `by_version` parameters. |
 | v0.18.0 | **Auto-update.** New `update` subcommand with `--check` (scriptable, exit 1 if update available) and `--yes` (non-interactive) flags. Updates both kcp-memory and kcp-commands JARs. Startup update notification on first run each day (24h-rate-limited, shared `~/.kcp/last-update-check` cache). Fix: `GET /health` now returns the real version string (was hardcoded `"0.5.0"`). |
-| v0.19.0 | **RFC-0017 bridge usage in stats.** `GET /stats` (and `kcp_memory_stats` MCP tool) now includes a `kcpBridgeUsage` block when `~/.kcp/usage.db` exists — total searches, units fetched, tokens saved, and top 5 most-accessed units. Completes the observability loop: bridge writes events, kcp-memory surfaces the aggregate view. |
+| v0.19.0 | **RFC-0017 bridge usage in stats.** `GET /stats` (and `kcp_memory_stats` MCP tool — 10th tool) now includes a `kcpBridgeUsage` block when `~/.kcp/usage.db` exists — total searches, units fetched, tokens saved, and top 5 most-accessed units. Completes the observability loop: bridge writes events, kcp-memory surfaces the aggregate view. |
+| v0.20.0 | **RFC-0017 UsageLogger.** CLI `search` and `events search` now log to `~/.kcp/usage.db` via synchronous `logSearchSync()` — no daemon-thread race on JVM exit. Populates the same usage database that kcp-dashboard reads. |
+| v0.21.0 | **FTS session fix.** `SessionParser` accepted only `"human"` type for user messages, but Claude Code sends `"user"`. All 3,742 sessions had NULL `first_message` — FTS returned 0 results. Fixed with regression test. **After upgrading, run `kcp-memory scan --force`** to repopulate session data. |
+| v0.22.0 | **Documentation and version alignment.** Updated README: 10 MCP tools (was 9), CLI alias note (`--enable-native-access`), FTS fix upgrade instructions. Coordinated release with kcp-commands v0.22.0 and kcp-dashboard v0.22.0. |
 
 ---
 
@@ -442,11 +455,11 @@ complementary — it makes the past retrievable and queryable.
 | **Reads** | 289 command manifests | `~/.claude/projects/**/*.jsonl` + `~/.kcp/events.jsonl` |
 | **Answers** | "How do I run this?" | "What did I do before?" |
 | **CLI** | — | `scan`, `search`, `list`, `stats`, `analyze` / `analyze --by-version` (v0.16.0), `events`, `agents`, `update` (v0.18.0) |
-| **MCP** | — | 9 tools — includes `kcp_memory_analyze` (v0.17.0) |
+| **MCP** | — | 10 tools — includes `kcp_memory_analyze` (v0.17.0), `kcp_memory_stats` with RFC-0017 bridge usage (v0.19.0) |
 
 Both use `~/.kcp/` and are part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
 
-**[kcp-dashboard](https://github.com/Cantara/kcp-dashboard)** is the live terminal dashboard for KCP usage statistics. It reads `~/.kcp/usage.db` (written by the kcp-mcp bridge per RFC-0017) and surfaces the same data as `kcp_memory_stats` in a Bubble Tea TUI — queries served, tokens saved, top units with bar chart, recent queries. Refreshes every 2 seconds. Single Go binary, no runtime deps.
+**[kcp-dashboard](https://github.com/Cantara/kcp-dashboard)** is the live terminal dashboard for KCP usage statistics. It reads `~/.kcp/usage.db` (RFC-0017) and `~/.kcp/memory.db` — showing commands guided, context delivered, manifest coverage, session profile, guidance quality metrics, and memory search recall. Refreshes every 2 seconds. Single Go binary, no runtime deps.
 
 ---
 
