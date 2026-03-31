@@ -47,9 +47,6 @@ Downloads the JAR to `~/.kcp/`, starts the daemon on port 7735, and runs an init
 
 ### 2. Index your sessions
 
-> **Upgrading from v0.20.0 or earlier?** Run `kcp-memory scan --force` after upgrading.
-> v0.21.0 fixed a bug where `SessionParser` only accepted `"human"` message type but Claude Code sends `"user"` — all sessions had NULL `first_message` and FTS returned 0 results. A force-scan repopulates the data.
-
 ```bash
 kcp-memory scan
 ```
