@@ -40,21 +40,32 @@ else
 fi
 
 # Wire PostToolUse hook into ~/.claude/settings.json
+HOOK_ENTRY="{\"matcher\":\".*\",\"hooks\":[{\"type\":\"command\",\"command\":\"${KCP_DIR}/memory-hook.sh\"}]}"
+
 if [ -f "${SETTINGS}" ]; then
-    echo ""
-    echo "[kcp-memory] to enable the PostToolUse hook, add to ${SETTINGS}:"
-    echo ""
-    echo '  "hooks": {'
-    echo '    "PostToolUse": ['
-    echo '      {'
-    echo '        "matcher": ".*",'
-    echo '        "hooks": [{"type":"command","command":"'"${KCP_DIR}/memory-hook.sh"'"}]'
-    echo '      }'
-    echo '    ]'
-    echo '  }'
-    echo ""
+    # Check if the hook is already registered
+    if grep -q "memory-hook" "${SETTINGS}" 2>/dev/null; then
+        echo "[kcp-memory] PostToolUse hook already registered in ${SETTINGS}"
+    elif command -v python3 > /dev/null 2>&1; then
+        python3 - "${SETTINGS}" "${HOOK_ENTRY}" <<'PYEOF'
+import json, sys
+path, entry = sys.argv[1], json.loads(sys.argv[2])
+with open(path) as f:
+    cfg = json.load(f)
+hooks = cfg.setdefault("hooks", {})
+post = hooks.setdefault("PostToolUse", [])
+post.append(entry)
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PYEOF
+        echo "[kcp-memory] PostToolUse hook registered in ${SETTINGS}"
+    else
+        echo "[kcp-memory] python3 not found — add this to ${SETTINGS} manually:"
+        echo "  \"hooks\": {\"PostToolUse\": [${HOOK_ENTRY}]}"
+    fi
 else
-    echo "[kcp-memory] note: ${SETTINGS} not found — create it to enable the PostToolUse hook"
+    echo "[kcp-memory] note: ${SETTINGS} not found — Claude Code not installed?"
 fi
 
 # Run initial scan
