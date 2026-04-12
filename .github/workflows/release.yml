@@ -28,7 +28,7 @@ jobs:
         run: mvn test
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: java/target/kcp-memory-daemon.jar
           generate_release_notes: true
