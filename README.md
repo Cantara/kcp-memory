@@ -35,6 +35,28 @@ run `kubectl apply` in?" in milliseconds.
 
 ---
 
+## kcp-memory vs Synthesis MCP
+
+If you use [Synthesis](https://github.com/exoreaction/synthesis), you may notice it also
+indexes Claude session transcripts. The two tools are complementary, not competing:
+
+| | kcp-memory | Synthesis MCP |
+|--|-----------|---------------|
+| **What it is** | Standalone episodic index | Full-stack codebase intelligence + episodic memory |
+| **Session search** | ✅ FTS5 over `~/.claude/projects/**/*.jsonl` | ✅ FTS5 over same transcripts — same mechanism |
+| **Tool-call events** | ✅ FTS5 over `~/.kcp/events.jsonl` | ❌ |
+| **Manifest quality** | ✅ `kcp_memory_analyze` — retry/help/error rates | ❌ |
+| **Codebase analysis** | ❌ | ✅ 40+ tools — architecture, patterns, health, security, code-graph, cross-repo deps |
+| **Requires** | Java 21, one JAR (~5 MB) | Java 21, one JAR (~50 MB), `synthesis init` to index a workspace |
+| **Scope** | All projects, all sessions (global `~/.kcp/memory.db`) | Multiple codebases via `--workspaces`; sessions are global |
+| **Who it's for** | Any Claude Code user | Teams/practitioners with codebases to index |
+
+**Rule of thumb:** if you have Synthesis, you already have session search — but kcp-memory
+covers the tool-event and manifest quality layers that Synthesis doesn't touch. If you
+don't have Synthesis, kcp-memory is the standalone path for episodic memory.
+
+---
+
 ## Quick start
 
 ### 1. Install
