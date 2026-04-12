@@ -2,48 +2,45 @@ package com.cantara.kcp.memory.handler;
 
 import com.cantara.kcp.memory.model.ToolEvent;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
+import com.cantara.kcp.memory.server.TcpExchange;
 import com.cantara.kcp.memory.store.EventStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
+import java.util.Collections;
 import java.util.List;
 
 /**
  * GET /events/search?q=...&limit=20
- * <p>
- * Full-text search over tool-call events ingested from ~/.kcp/events.jsonl.
+ *
+ * <p>Full-text search over tool-call events ingested from ~/.kcp/events.jsonl.
  * Triggers an incremental EventLogScanner pass before searching so that
  * the most recently logged events are always visible.
  */
-public class EventsHandler implements HttpHandler {
+public class EventsHandler extends BaseHandler {
 
     private final MemoryDatabase db;
-    private final ObjectMapper   mapper = new ObjectMapper();
 
     public EventsHandler(MemoryDatabase db) {
         this.db = db;
     }
 
     @Override
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!"GET".equals(exchange.getRequestMethod())) {
-            exchange.sendResponseHeaders(405, -1);
-            exchange.close();
+    public void handle(TcpExchange ex) throws IOException {
+        if (!"GET".equals(ex.getRequestMethod())) {
+            sendError(ex, 405, "Method not allowed");
             return;
         }
 
-        String q     = param(exchange.getRequestURI().getQuery(), "q");
-        int    limit = intParam(exchange.getRequestURI().getQuery(), "limit", 20);
+        String query = ex.getRequestURI().getQuery();
+        String q     = param(query, "q");
+        int    limit = intParam(query, "limit", 20);
 
         if (q == null || q.isBlank()) {
-            sendJson(exchange, mapper.writeValueAsBytes(List.of()));
+            sendJson(ex, 200, Collections.emptyList());
             return;
         }
 
@@ -52,20 +49,10 @@ public class EventsHandler implements HttpHandler {
 
         try {
             List<ToolEvent> results = new EventStore(db).search(q, limit);
-            sendJson(exchange, mapper.writeValueAsBytes(results));
+            sendJson(ex, 200, results);
         } catch (SQLException e) {
-            exchange.sendResponseHeaders(500, -1);
-            exchange.close();
+            sendError(ex, 500, "Search failed: " + e.getMessage());
         }
-    }
-
-    private void sendJson(HttpExchange exchange, byte[] bytes) throws IOException {
-        exchange.getResponseHeaders().add("Content-Type", "application/json");
-        exchange.sendResponseHeaders(200, bytes.length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(bytes);
-        }
-        exchange.close();
     }
 
     private String param(String query, String name) {

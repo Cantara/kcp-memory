@@ -2,8 +2,8 @@ package com.cantara.kcp.memory.handler;
 
 import com.cantara.kcp.memory.model.SearchResult;
 import com.cantara.kcp.memory.store.MemoryDatabase;
+import com.cantara.kcp.memory.server.TcpExchange;
 import com.cantara.kcp.memory.store.SessionStore;
-import com.sun.net.httpserver.HttpExchange;
 
 import java.io.IOException;
 import java.util.List;
@@ -21,7 +21,7 @@ public class ListHandler extends BaseHandler {
     }
 
     @Override
-    public void handle(HttpExchange ex) throws IOException {
+    public void handle(TcpExchange ex) throws IOException {
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             sendError(ex, 405, "Method not allowed");
             return;

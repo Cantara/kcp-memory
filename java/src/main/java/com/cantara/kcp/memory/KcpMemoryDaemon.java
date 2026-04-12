@@ -5,11 +5,10 @@ import com.cantara.kcp.memory.mcp.McpServer;
 import com.cantara.kcp.memory.scanner.AgentSessionScanner;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
+import com.cantara.kcp.memory.server.TcpHttpServer;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.update.UpdateChecker;
-import com.sun.net.httpserver.HttpServer;
 
-import java.net.InetSocketAddress;
 import java.sql.SQLException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -18,14 +17,19 @@ import java.util.logging.Logger;
 
 /**
  * HTTP daemon — listens on localhost:7735.
- * <p>
- * Endpoints:
+ *
+ * <p>Uses a plain {@link TcpHttpServer} (ServerSocket + virtual threads) instead of
+ * {@code com.sun.net.httpserver.HttpServer}, avoiding the NIO selector dependency
+ * ({@code WEPollSelectorImpl} / AF_UNIX pipes) that fails inside Windows MSIX sandboxes.
+ *
+ * <p>Endpoints:
  * <pre>
  *   GET  /health          — liveness + session count
  *   GET  /search?q=...    — FTS5 full-text search
  *   GET  /sessions        — list recent sessions
  *   GET  /stats           — aggregate statistics
  *   POST /scan            — trigger incremental scan (fire-and-forget)
+ *   GET  /events/search   — tool-call event search
  * </pre>
  */
 public class KcpMemoryDaemon {
@@ -34,7 +38,7 @@ public class KcpMemoryDaemon {
     public  static final int    PORT = 7735;
 
     private final MemoryDatabase db;
-    private HttpServer server;
+    private TcpHttpServer server;
     private ScheduledExecutorService scheduler;
 
     public KcpMemoryDaemon(MemoryDatabase db) {
@@ -42,8 +46,7 @@ public class KcpMemoryDaemon {
     }
 
     public void start() throws Exception {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", PORT), 0);
-        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        server = new TcpHttpServer(PORT);
 
         server.createContext("/health",        new HealthHandler(db));
         server.createContext("/search",        new SearchHandler(db));
@@ -97,13 +100,13 @@ public class KcpMemoryDaemon {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOG.info("Shutting down kcp-memory daemon...");
             scheduler.shutdownNow();
-            server.stop(2);
+            server.stop();
             try { db.close(); } catch (SQLException ignored) {}
         }));
     }
 
     public void stop() {
         if (scheduler != null) scheduler.shutdownNow();
-        if (server    != null) server.stop(2);
+        if (server    != null) server.stop();
     }
 }
