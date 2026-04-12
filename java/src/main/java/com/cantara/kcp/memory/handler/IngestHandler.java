@@ -1,6 +1,7 @@
 package com.cantara.kcp.memory.handler;
 
 import com.cantara.kcp.memory.peer.PeerSyncService;
+import com.cantara.kcp.memory.server.EventBroadcaster;
 import com.cantara.kcp.memory.server.TcpExchange;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -33,9 +34,18 @@ public class IngestHandler extends BaseHandler {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final MemoryDatabase db;
+    private EventBroadcaster broadcaster;
 
     public IngestHandler(MemoryDatabase db) {
         this.db = db;
+    }
+
+    /**
+     * Set an optional EventBroadcaster to fan-out ingested events to WebSocket clients.
+     * If not set, ingested events are still stored but not broadcast.
+     */
+    public void setBroadcaster(EventBroadcaster broadcaster) {
+        this.broadcaster = broadcaster;
     }
 
     @Override
@@ -141,7 +151,24 @@ public class IngestHandler extends BaseHandler {
                 ps.setString(6, outputPreview);
                 ps.setString(7, source);
                 ps.setString(8, hash);
-                count += ps.executeUpdate();
+                int inserted = ps.executeUpdate();
+                count += inserted;
+
+                // Broadcast to WebSocket subscribers if event was actually inserted
+                if (inserted > 0 && broadcaster != null) {
+                    try {
+                        String broadcastJson = JSON.writeValueAsString(Map.of(
+                                "type", "tool_event",
+                                "peerId", source,
+                                "tool", tool,
+                                "command", command,
+                                "timestamp", eventTs
+                        ));
+                        broadcaster.broadcast(broadcastJson);
+                    } catch (Exception e) {
+                        LOG.fine("Broadcast failed for event: " + e.getMessage());
+                    }
+                }
             }
         }
         LOG.fine("Ingested " + count + " events from peer push");
