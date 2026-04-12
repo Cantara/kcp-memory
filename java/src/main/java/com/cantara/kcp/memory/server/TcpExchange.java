@@ -19,20 +19,25 @@ import java.util.Map;
  */
 public class TcpExchange implements Closeable {
 
-    private static final Map<Integer, String> STATUS_TEXT = Map.of(
+    private static final Map<Integer, String> STATUS_TEXT = new HashMap<>(Map.of(
             200, "OK",
+            201, "Created",
             202, "Accepted",
+            204, "No Content",
             400, "Bad Request",
+            401, "Unauthorized",
             404, "Not Found",
             405, "Method Not Allowed",
-            500, "Internal Server Error"
-    );
+            500, "Internal Server Error",
+            502, "Bad Gateway"
+    ));
 
     private final Socket socket;
     private final OutputStream out;
     private final String method;
     private final URI uri;
     private final byte[] requestBody;
+    private final Map<String, String> requestHeaders = new HashMap<>();
 
     public TcpExchange(Socket socket) throws IOException {
         this.socket = socket;
@@ -56,9 +61,10 @@ public class TcpExchange implements Closeable {
         while ((line = readLine(in)) != null && !line.isEmpty()) {
             int colon = line.indexOf(':');
             if (colon > 0) {
-                String key = line.substring(0, colon).trim().toLowerCase();
+                String key = line.substring(0, colon).trim();
                 String value = line.substring(colon + 1).trim();
-                if ("content-length".equals(key)) {
+                requestHeaders.put(key, value);
+                if ("content-length".equalsIgnoreCase(key)) {
                     try { contentLength = Integer.parseInt(value); }
                     catch (NumberFormatException ignored) {}
                 }
@@ -84,6 +90,49 @@ public class TcpExchange implements Closeable {
     public URI getRequestURI() { return uri; }
 
     public InputStream getRequestBody() { return new ByteArrayInputStream(requestBody); }
+
+    /**
+     * Get a request header value by name (case-insensitive lookup).
+     *
+     * @param name header name (e.g. "Authorization")
+     * @return the header value, or null if not present
+     */
+    public String getRequestHeader(String name) {
+        // Case-insensitive lookup
+        for (Map.Entry<String, String> entry : requestHeaders.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(name)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Send HTTP response headers for streaming (no Content-Length).
+     * After calling this, write directly to {@link #getOutputStream()} and flush.
+     *
+     * @param statusCode  HTTP status
+     * @param contentType value for Content-Type header
+     */
+    public void sendStreamingHeaders(int statusCode, String contentType) throws IOException {
+        String reason = STATUS_TEXT.getOrDefault(statusCode, "Unknown");
+        StringBuilder sb = new StringBuilder();
+        sb.append("HTTP/1.1 ").append(statusCode).append(' ').append(reason).append("\r\n");
+        sb.append("Content-Type: ").append(contentType).append("\r\n");
+        sb.append("Transfer-Encoding: chunked\r\n");
+        sb.append("Connection: close\r\n");
+        sb.append("\r\n");
+        out.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+        out.flush();
+    }
+
+    /**
+     * Get the raw output stream for streaming responses.
+     * Call {@link #sendStreamingHeaders(int, String)} first.
+     */
+    public OutputStream getOutputStream() {
+        return out;
+    }
 
     /**
      * Send a complete HTTP response and flush.

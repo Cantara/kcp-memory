@@ -63,6 +63,37 @@ public class KcpMemoryCli implements Callable<Integer> {
     @Command(name = "daemon", description = "Start the kcp-memory HTTP daemon on port 7735")
     static class DaemonCmd implements Callable<Integer> {
 
+        @Option(names = "--peer", arity = "0..*",
+                description = "Peer URI(s) for bidirectional sync (repeatable: ssh://user@host or tcp://host:port)")
+        private List<String> peerUris;
+
+        @Option(names = "--serve",
+                description = "Bind address for external mobile API (e.g., 0.0.0.0:8443)")
+        private String serveAddress;
+
+        @Option(names = "--tls-cert",
+                description = "Path to TLS certificate (PEM or PKCS12)")
+        private String tlsCert;
+
+        @Option(names = "--tls-key",
+                description = "Path to TLS private key (PEM or password)")
+        private String tlsKey;
+
+        @Option(names = "--api-key",
+                description = "API key for external access (or KCP_API_KEY env)",
+                defaultValue = "${KCP_API_KEY}")
+        private String apiKey;
+
+        @Option(names = "--capture-dir",
+                description = "Directory for mobile knowledge captures",
+                defaultValue = "~/.kcp/captures")
+        private String captureDir;
+
+        @Option(names = "--synthesis-cmd",
+                description = "Command to query Synthesis",
+                defaultValue = "synthesis search")
+        private String synthesisCmd;
+
         @Override
         public Integer call() throws Exception {
             MemoryDatabase db = new MemoryDatabase();
@@ -70,6 +101,33 @@ public class KcpMemoryCli implements Callable<Integer> {
             daemon.start();
             System.out.printf("[kcp-memory] daemon running on port %d — press Ctrl+C to stop%n",
                     KcpMemoryDaemon.PORT);
+
+            // Start peer sync if --peer specified
+            String localId = java.net.InetAddress.getLocalHost().getHostName();
+            if (peerUris != null) {
+                for (String uri : peerUris) {
+                    System.out.printf("[kcp-memory] starting peer sync with %s%n", uri);
+                    daemon.startPeerSync(uri, localId);
+                }
+            }
+
+            // Start external server if --serve specified
+            if (serveAddress != null) {
+                if (apiKey == null || apiKey.isBlank() || apiKey.equals("${KCP_API_KEY}")) {
+                    System.err.println("ERROR: --api-key (or KCP_API_KEY env) required with --serve");
+                    return 1;
+                }
+                String[] parts = serveAddress.split(":");
+                String host = parts.length > 1 ? parts[0] : "0.0.0.0";
+                int port = Integer.parseInt(parts[parts.length - 1]);
+
+                // Expand ~ in capture-dir
+                String expandedCaptureDir = captureDir.replace("~", System.getProperty("user.home"));
+
+                daemon.startExternalServer(host, port, tlsCert, tlsKey, apiKey, expandedCaptureDir, synthesisCmd);
+                System.out.printf("[kcp-memory] external API serving on %s:%d%n", host, port);
+            }
+
             Thread.currentThread().join(); // block until killed
             return 0;
         }

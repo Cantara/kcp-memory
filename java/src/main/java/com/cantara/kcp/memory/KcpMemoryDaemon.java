@@ -2,14 +2,19 @@ package com.cantara.kcp.memory;
 
 import com.cantara.kcp.memory.handler.*;
 import com.cantara.kcp.memory.mcp.McpServer;
+import com.cantara.kcp.memory.peer.PeerSyncService;
 import com.cantara.kcp.memory.scanner.AgentSessionScanner;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
+import com.cantara.kcp.memory.server.ExternalHttpServer;
 import com.cantara.kcp.memory.server.TcpHttpServer;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.update.UpdateChecker;
 
+import java.nio.file.Path;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -40,6 +45,8 @@ public class KcpMemoryDaemon {
     private final MemoryDatabase db;
     private TcpHttpServer server;
     private ScheduledExecutorService scheduler;
+    private final List<PeerSyncService> peerSyncServices = new ArrayList<>();
+    private ExternalHttpServer externalServer;
 
     public KcpMemoryDaemon(MemoryDatabase db) {
         this.db = db;
@@ -54,6 +61,7 @@ public class KcpMemoryDaemon {
         server.createContext("/stats",         new StatsHandler(db));
         server.createContext("/scan",          new ScanHandler(db));
         server.createContext("/events/search", new EventsHandler(db));
+        server.createContext("/ingest",        new IngestHandler(db));
 
         server.start();
         LOG.info("kcp-memory daemon started on port " + PORT);
@@ -100,13 +108,54 @@ public class KcpMemoryDaemon {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOG.info("Shutting down kcp-memory daemon...");
             scheduler.shutdownNow();
+            peerSyncServices.forEach(PeerSyncService::stop);
+            if (externalServer != null) externalServer.stop();
             server.stop();
             try { db.close(); } catch (SQLException ignored) {}
         }));
     }
 
+    /**
+     * Start bidirectional peer sync. Call after start(). Repeatable.
+     * @param peerUri ssh://user@host or tcp://host:port
+     * @param localInstanceId this instance's identifier (hostname)
+     */
+    public void startPeerSync(String peerUri, String localInstanceId) {
+        PeerSyncService sync = new PeerSyncService(db, peerUri, localInstanceId);
+        sync.start();
+        peerSyncServices.add(sync);
+    }
+
+    /**
+     * Start the external API server for mobile access. Call after start().
+     */
+    public void startExternalServer(String bindAddress, int port,
+                                     String tlsCert, String tlsKey,
+                                     String apiKey, String captureDir,
+                                     String synthesisCmd) throws Exception {
+        externalServer = new ExternalHttpServer(bindAddress, port, tlsCert, tlsKey, apiKey);
+
+        // Register all internal endpoints (same data, external auth)
+        externalServer.createContext("/health", new HealthHandler(db));
+        externalServer.createContext("/search", new SearchHandler(db));
+        externalServer.createContext("/sessions", new ListHandler(db));
+        externalServer.createContext("/stats", new StatsHandler(db));
+        externalServer.createContext("/events/search", new EventsHandler(db));
+
+        // Mobile-specific endpoints
+        externalServer.createContext("/dispatch", new DispatchHandler());
+        externalServer.createContext("/capture",
+                new CaptureHandler(Path.of(captureDir != null ? captureDir : System.getProperty("user.home") + "/.kcp/captures")));
+        externalServer.createContext("/synthesis/search",
+                new SynthesisProxyHandler(synthesisCmd != null ? synthesisCmd : "synthesis search"));
+
+        externalServer.start();
+    }
+
     public void stop() {
         if (scheduler != null) scheduler.shutdownNow();
+        peerSyncServices.forEach(PeerSyncService::stop);
+        if (externalServer != null) externalServer.stop();
         if (server    != null) server.stop();
     }
 }
