@@ -33,6 +33,7 @@ public class TcpExchange implements Closeable {
     ));
 
     private final Socket socket;
+    private final InputStream in;
     private final OutputStream out;
     private final String method;
     private final URI uri;
@@ -42,8 +43,9 @@ public class TcpExchange implements Closeable {
     public TcpExchange(Socket socket) throws IOException {
         this.socket = socket;
         this.out = socket.getOutputStream();
+        this.in = socket.getInputStream();
 
-        InputStream in = socket.getInputStream();
+        InputStream in = this.in;
 
         // --- Parse request line and headers byte-by-byte (safe with binary body) ---
         String requestLine = readLine(in);
@@ -132,6 +134,17 @@ public class TcpExchange implements Closeable {
      */
     public OutputStream getOutputStream() {
         return out;
+    }
+
+    /**
+     * Get the raw input stream from the underlying socket.
+     *
+     * <p>After the HTTP request line, headers, and body have been parsed in the constructor,
+     * this stream is positioned after the request body. For WebSocket upgrades (Content-Length: 0),
+     * this is where WebSocket frames will appear.
+     */
+    public InputStream getInputStream() {
+        return in;
     }
 
     /**

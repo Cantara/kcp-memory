@@ -67,6 +67,7 @@ public class PeerSyncService {
     private String peerId;
     private HttpClient httpClient;
     private ScheduledExecutorService scheduler;
+    private NodeRegistry nodeRegistry;
 
     /**
      * @param db              local database
@@ -128,6 +129,15 @@ public class PeerSyncService {
         return peerId;
     }
 
+    /**
+     * Set a NodeRegistry to track peer health and presence.
+     * After each successful sync cycle, the peer is marked as seen and
+     * health metrics are updated.
+     */
+    public void setNodeRegistry(NodeRegistry registry) {
+        this.nodeRegistry = registry;
+    }
+
     // --- sync cycle ---
 
     private void syncOnce() {
@@ -136,6 +146,23 @@ public class PeerSyncService {
             pullEvents();
             pushSessions();
             pushEvents();
+
+            // Update node registry after successful sync
+            if (nodeRegistry != null && peerId != null) {
+                nodeRegistry.register(peerId, peerUri);
+                nodeRegistry.markSeen(peerId);
+                // Fetch peer health stats
+                try {
+                    JsonNode health = fetchJson(baseUrl + "/health");
+                    if (health != null) {
+                        long sessions = health.path("sessions").asLong(0);
+                        // Use sessions as sessionCount; eventCount from stats if available
+                        nodeRegistry.updateHealth(peerId, sessions, 0);
+                    }
+                } catch (Exception e) {
+                    LOG.fine("Could not fetch peer health for registry: " + e.getMessage());
+                }
+            }
         } catch (Exception e) {
             LOG.warning("Peer sync failed for " + peerId + ": " + e.getMessage());
         }

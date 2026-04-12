@@ -2,10 +2,12 @@ package com.cantara.kcp.memory;
 
 import com.cantara.kcp.memory.handler.*;
 import com.cantara.kcp.memory.mcp.McpServer;
+import com.cantara.kcp.memory.peer.NodeRegistry;
 import com.cantara.kcp.memory.peer.PeerSyncService;
 import com.cantara.kcp.memory.scanner.AgentSessionScanner;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
+import com.cantara.kcp.memory.server.EventBroadcaster;
 import com.cantara.kcp.memory.server.ExternalHttpServer;
 import com.cantara.kcp.memory.server.TcpHttpServer;
 import com.cantara.kcp.memory.store.MemoryDatabase;
@@ -43,6 +45,8 @@ public class KcpMemoryDaemon {
     public  static final int    PORT = 7735;
 
     private final MemoryDatabase db;
+    private final NodeRegistry nodeRegistry = new NodeRegistry();
+    private final EventBroadcaster broadcaster = new EventBroadcaster();
     private TcpHttpServer server;
     private ScheduledExecutorService scheduler;
     private final List<PeerSyncService> peerSyncServices = new ArrayList<>();
@@ -55,13 +59,17 @@ public class KcpMemoryDaemon {
     public void start() throws Exception {
         server = new TcpHttpServer(PORT);
 
+        IngestHandler ingestHandler = new IngestHandler(db);
+        ingestHandler.setBroadcaster(broadcaster);
+
         server.createContext("/health",        new HealthHandler(db));
         server.createContext("/search",        new SearchHandler(db));
         server.createContext("/sessions",      new ListHandler(db));
         server.createContext("/stats",         new StatsHandler(db));
         server.createContext("/scan",          new ScanHandler(db));
         server.createContext("/events/search", new EventsHandler(db));
-        server.createContext("/ingest",        new IngestHandler(db));
+        server.createContext("/ingest",        ingestHandler);
+        server.createContext("/nodes",         new NodesHandler(nodeRegistry));
 
         server.start();
         LOG.info("kcp-memory daemon started on port " + PORT);
@@ -122,6 +130,7 @@ public class KcpMemoryDaemon {
      */
     public void startPeerSync(String peerUri, String localInstanceId) {
         PeerSyncService sync = new PeerSyncService(db, peerUri, localInstanceId);
+        sync.setNodeRegistry(nodeRegistry);
         sync.start();
         peerSyncServices.add(sync);
     }
@@ -141,6 +150,10 @@ public class KcpMemoryDaemon {
         externalServer.createContext("/sessions", new ListHandler(db));
         externalServer.createContext("/stats", new StatsHandler(db));
         externalServer.createContext("/events/search", new EventsHandler(db));
+
+        // Control plane endpoints
+        externalServer.createContext("/nodes", new NodesHandler(nodeRegistry));
+        externalServer.createContext("/ws", new WsHandler(broadcaster));
 
         // Mobile-specific endpoints
         externalServer.createContext("/dispatch", new DispatchHandler());
