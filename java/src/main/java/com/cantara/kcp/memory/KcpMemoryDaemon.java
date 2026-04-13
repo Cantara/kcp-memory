@@ -11,6 +11,7 @@ import com.cantara.kcp.memory.server.EventBroadcaster;
 import com.cantara.kcp.memory.server.ExternalHttpServer;
 import com.cantara.kcp.memory.server.TcpHttpServer;
 import com.cantara.kcp.memory.store.MemoryDatabase;
+import com.cantara.kcp.memory.store.PendingTaskStore;
 import com.cantara.kcp.memory.update.UpdateChecker;
 
 import java.nio.file.Path;
@@ -81,6 +82,12 @@ public class KcpMemoryDaemon {
         // Process control (hub-local)
         ProcessHandler processHandler = new ProcessHandler();
         server.createContext("/process", processHandler);
+
+        // Pending task queue (peer dispatch)
+        PendingTaskStore pendingStore = new PendingTaskStore(db);
+        PendingDispatchHandler pendingHandler = new PendingDispatchHandler(pendingStore);
+        server.createContext("/dispatch/queue", pendingHandler);
+        server.createContext("/pending", pendingHandler);
 
         server.start();
         LOG.info("kcp-memory daemon started on port " + PORT);
@@ -169,6 +176,12 @@ public class KcpMemoryDaemon {
         // File browser + process control (hub-local, available externally)
         externalServer.createContext("/files", new FileHandler());
         externalServer.createContext("/process", new ProcessHandler());
+
+        // Pending task queue (peer dispatch — available externally for mobile)
+        PendingTaskStore pendingStore = new PendingTaskStore(db);
+        PendingDispatchHandler pendingHandler = new PendingDispatchHandler(pendingStore);
+        externalServer.createContext("/dispatch/queue", pendingHandler);
+        externalServer.createContext("/pending", pendingHandler);
 
         // Mobile-specific endpoints
         externalServer.createContext("/dispatch", new DispatchHandler());

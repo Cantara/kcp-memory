@@ -68,6 +68,7 @@ public class PeerSyncService {
     private HttpClient httpClient;
     private ScheduledExecutorService scheduler;
     private NodeRegistry nodeRegistry;
+    private TaskExecutor taskExecutor;
 
     /**
      * @param db              local database
@@ -138,6 +139,19 @@ public class PeerSyncService {
         this.nodeRegistry = registry;
     }
 
+    /**
+     * Set a TaskExecutor for executing pending tasks polled from the hub.
+     * Default: {@link ClaudeTaskExecutor}. Override in tests.
+     */
+    public void setTaskExecutor(TaskExecutor executor) {
+        this.taskExecutor = executor;
+    }
+
+    /** This instance's identifier (hostname or configured ID). */
+    public String getLocalInstanceId() {
+        return localInstanceId;
+    }
+
     // --- sync cycle ---
 
     private void syncOnce() {
@@ -146,6 +160,7 @@ public class PeerSyncService {
             pullEvents();
             pushSessions();
             pushEvents();
+            pollPendingTasks();
 
             // Update node registry after successful sync
             if (nodeRegistry != null && peerId != null) {
@@ -165,6 +180,61 @@ public class PeerSyncService {
             }
         } catch (Exception e) {
             LOG.warning("Peer sync failed for " + peerId + ": " + e.getMessage());
+        }
+    }
+
+    // --- PENDING TASKS: poll hub for tasks assigned to this peer ---
+
+    private void pollPendingTasks() {
+        try {
+            String url = baseUrl + "/pending?peer=" + localInstanceId;
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(15))
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                // Nothing pending
+                return;
+            }
+            if (response.statusCode() != 200) {
+                LOG.fine("Pending task poll returned " + response.statusCode());
+                return;
+            }
+
+            JsonNode task = JSON.readTree(response.body());
+            String taskId = task.path("taskId").asText(null);
+            String prompt = task.path("prompt").asText(null);
+
+            if (taskId == null || prompt == null) return;
+
+            LOG.info("Claimed pending task " + taskId + ": " + prompt.substring(0, Math.min(prompt.length(), 80)));
+
+            // Execute the task
+            TaskExecutor executor = this.taskExecutor != null ? this.taskExecutor : new ClaudeTaskExecutor();
+            String result;
+            try {
+                result = executor.execute(prompt);
+            } catch (IOException e) {
+                LOG.warning("Task " + taskId + " failed: " + e.getMessage());
+                // Push error back
+                String errorPayload = JSON.writeValueAsString(
+                        JSON.createObjectNode().put("taskId", taskId).put("error", e.getMessage()));
+                postJson(baseUrl + "/pending/result", errorPayload);
+                return;
+            }
+
+            // Push result back
+            String resultPayload = JSON.writeValueAsString(
+                    JSON.createObjectNode().put("taskId", taskId).put("result", result));
+            postJson(baseUrl + "/pending/result", resultPayload);
+            LOG.info("Task " + taskId + " completed successfully");
+
+        } catch (Exception e) {
+            LOG.fine("Pending task poll error: " + e.getMessage());
         }
     }
 
