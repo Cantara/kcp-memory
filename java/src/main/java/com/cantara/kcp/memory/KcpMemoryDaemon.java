@@ -31,12 +31,15 @@ import java.util.logging.Logger;
  *
  * <p>Endpoints:
  * <pre>
- *   GET  /health          — liveness + session count
- *   GET  /search?q=...    — FTS5 full-text search
- *   GET  /sessions        — list recent sessions
- *   GET  /stats           — aggregate statistics
- *   POST /scan            — trigger incremental scan (fire-and-forget)
- *   GET  /events/search   — tool-call event search
+ *   GET  /health              — liveness + session count
+ *   GET  /search?q=...        — FTS5 full-text search
+ *   GET  /sessions            — list recent sessions
+ *   GET  /stats               — aggregate statistics
+ *   POST /scan                — trigger incremental scan (fire-and-forget)
+ *   GET  /events/search       — tool-call event search
+ *   GET  /files?path=...      — directory listing (dirs-first, sorted)
+ *   GET  /files/content?path= — read file content (max 1MB, UTF-8)
+ *   POST /process             — systemctl action on named service
  * </pre>
  */
 public class KcpMemoryDaemon {
@@ -70,6 +73,14 @@ public class KcpMemoryDaemon {
         server.createContext("/events/search", new EventsHandler(db));
         server.createContext("/ingest",        ingestHandler);
         server.createContext("/nodes",         new NodesHandler(nodeRegistry));
+
+        // File browser (hub-local)
+        FileHandler fileHandler = new FileHandler();
+        server.createContext("/files", fileHandler);
+
+        // Process control (hub-local)
+        ProcessHandler processHandler = new ProcessHandler();
+        server.createContext("/process", processHandler);
 
         server.start();
         LOG.info("kcp-memory daemon started on port " + PORT);
@@ -154,6 +165,10 @@ public class KcpMemoryDaemon {
         // Control plane endpoints
         externalServer.createContext("/nodes", new NodesHandler(nodeRegistry));
         externalServer.createContext("/ws", new WsHandler(broadcaster));
+
+        // File browser + process control (hub-local, available externally)
+        externalServer.createContext("/files", new FileHandler());
+        externalServer.createContext("/process", new ProcessHandler());
 
         // Mobile-specific endpoints
         externalServer.createContext("/dispatch", new DispatchHandler());

@@ -19,18 +19,20 @@ import java.util.Map;
  */
 public class TcpExchange implements Closeable {
 
-    private static final Map<Integer, String> STATUS_TEXT = new HashMap<>(Map.of(
-            200, "OK",
-            201, "Created",
-            202, "Accepted",
-            204, "No Content",
-            400, "Bad Request",
-            401, "Unauthorized",
-            404, "Not Found",
-            405, "Method Not Allowed",
-            500, "Internal Server Error",
-            502, "Bad Gateway"
-    ));
+    private static final Map<Integer, String> STATUS_TEXT = new HashMap<>();
+    static {
+        STATUS_TEXT.put(200, "OK");
+        STATUS_TEXT.put(201, "Created");
+        STATUS_TEXT.put(202, "Accepted");
+        STATUS_TEXT.put(204, "No Content");
+        STATUS_TEXT.put(400, "Bad Request");
+        STATUS_TEXT.put(401, "Unauthorized");
+        STATUS_TEXT.put(404, "Not Found");
+        STATUS_TEXT.put(405, "Method Not Allowed");
+        STATUS_TEXT.put(500, "Internal Server Error");
+        STATUS_TEXT.put(502, "Bad Gateway");
+        STATUS_TEXT.put(503, "Service Unavailable");
+    }
 
     private final Socket socket;
     private final InputStream in;
