@@ -61,7 +61,7 @@ public class McpServer {
 
     private static final Logger LOG              = Logger.getLogger(McpServer.class.getName());
     private static final String PROTOCOL_VERSION = "2024-11-05";
-    public  static final String SERVER_VERSION   = "0.27.0";
+    public  static final String SERVER_VERSION   = "0.29.0";
 
     private final ObjectMapper   mapper = new ObjectMapper();
     private final MemoryDatabase db;
@@ -162,10 +162,11 @@ public class McpServer {
 
         tools.add(tool(
                 "kcp_memory_list",
-                "List recent Claude Code sessions, optionally filtered to a specific project directory. " +
-                "Shows date, turn count, tool call count, and the first user message per session.",
+                "List recent Claude Code sessions, optionally filtered to a specific project directory " +
+                "or tag. Shows date, turn count, tool call count, first user message, and tags per session.",
                 schema()
                         .optional("project", "string",  "Filter by project directory path (e.g. /src/myapp)")
+                        .optional("tag",     "string",  "Filter by tag (e.g. 'mynder', 'pr-919', 'ExoCortex-CC')")
                         .optional("limit",   "integer", "Max results (default 20)")
         ));
 
@@ -326,16 +327,19 @@ public class McpServer {
     private String toolList(JsonNode args) throws Exception {
         String project = args.path("project").asText(null);
         if (project != null && project.isBlank()) project = null;
+        String tag = args.path("tag").asText(null);
+        if (tag != null && tag.isBlank()) tag = null;
         int limit = args.path("limit").asInt(20);
 
         SessionStore       store    = new SessionStore(db);
-        List<SearchResult> sessions = store.list(project, limit);
+        List<SearchResult> sessions = store.list(project, null, tag, limit);
 
         if (sessions.isEmpty()) return "No sessions indexed yet. Run: kcp-memory scan";
 
         StringBuilder sb = new StringBuilder();
         sb.append(sessions.size()).append(" session(s)");
         if (project != null) sb.append(" in ").append(project);
+        if (tag != null) sb.append(" tagged '").append(tag).append("'");
         sb.append(":\n\n");
         for (SearchResult r : sessions) sb.append(formatSession(r));
         return sb.toString();
@@ -606,6 +610,10 @@ public class McpServer {
             String msg = r.getFirstMessage();
             if (msg.length() > 120) msg = msg.substring(0, 120) + "…";
             sb.append("\"").append(msg).append("\"\n");
+        }
+        List<String> tags = r.getSessionTags();
+        if (tags != null && !tags.isEmpty()) {
+            sb.append("tags: ").append(String.join(", ", tags)).append("\n");
         }
         sb.append("\n");
         return sb.toString();

@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.Collections;
 
 /**
  * Thread-safe registry of connected peer nodes in the ExoCortex mesh.
@@ -25,7 +26,8 @@ public class NodeRegistry {
             Instant lastSeen,
             String status,
             long sessionCount,
-            long eventCount
+            long eventCount,
+            List<String> capabilities
     ) {}
 
     private record MutableNode(
@@ -35,34 +37,39 @@ public class NodeRegistry {
             Instant lastSeen,
             String status,
             long sessionCount,
-            long eventCount
+            long eventCount,
+            List<String> capabilities
     ) {
         NodeInfo toInfo() {
-            return new NodeInfo(peerId, displayName, address, lastSeen, status, sessionCount, eventCount);
+            return new NodeInfo(peerId, displayName, address, lastSeen, status, sessionCount, eventCount, capabilities);
         }
     }
 
     private final ConcurrentMap<String, MutableNode> nodes = new ConcurrentHashMap<>();
 
     /**
-     * Register a peer node with a friendly display name.
-     * If already registered, updates the address, displayName, and resets lastSeen.
+     * Register a peer node with capabilities.
+     * If already registered, updates address, displayName, capabilities, and resets lastSeen.
      *
-     * @param peerId      unique peer identifier (e.g., hostname)
-     * @param address     peer address (e.g., ssh://user@host or "local")
-     * @param displayName friendly name shown in UIs (e.g., "Mimir", "Klaw"); defaults to peerId if null/blank
+     * @param peerId       unique peer identifier (e.g., hostname)
+     * @param address      peer address (e.g., ssh://user@host or "local")
+     * @param displayName  friendly name shown in UIs; defaults to peerId if null/blank
+     * @param capabilities executor tags, e.g. ["claude"], ["ironclaw", "deepseek/deepseek-v3.2"]
      */
-    public void register(String peerId, String address, String displayName) {
+    public void register(String peerId, String address, String displayName, List<String> capabilities) {
         String name = (displayName != null && !displayName.isBlank()) ? displayName : peerId;
-        nodes.put(peerId, new MutableNode(peerId, name, address, Instant.now(), "ok", 0, 0));
+        List<String> caps = capabilities != null ? List.copyOf(capabilities) : List.of();
+        nodes.put(peerId, new MutableNode(peerId, name, address, Instant.now(), "ok", 0, 0, caps));
     }
 
-    /**
-     * Register a peer node. If already registered, updates the address and resets lastSeen.
-     * Display name defaults to peerId.
-     */
+    /** Register with a friendly display name; capabilities default to empty. */
+    public void register(String peerId, String address, String displayName) {
+        register(peerId, address, displayName, List.of());
+    }
+
+    /** Register with display name defaulting to peerId; capabilities default to empty. */
     public void register(String peerId, String address) {
-        register(peerId, address, peerId);
+        register(peerId, address, peerId, List.of());
     }
 
     /**
@@ -70,7 +77,7 @@ public class NodeRegistry {
      */
     public void updateHealth(String peerId, long sessionCount, long eventCount) {
         nodes.computeIfPresent(peerId, (id, old) ->
-                new MutableNode(id, old.displayName, old.address, Instant.now(), old.status, sessionCount, eventCount));
+                new MutableNode(id, old.displayName, old.address, Instant.now(), old.status, sessionCount, eventCount, old.capabilities));
     }
 
     /**
@@ -78,7 +85,7 @@ public class NodeRegistry {
      */
     public void markSeen(String peerId) {
         nodes.computeIfPresent(peerId, (id, old) ->
-                new MutableNode(id, old.displayName, old.address, Instant.now(), old.status, old.sessionCount, old.eventCount));
+                new MutableNode(id, old.displayName, old.address, Instant.now(), old.status, old.sessionCount, old.eventCount, old.capabilities));
     }
 
     /**

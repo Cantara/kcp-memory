@@ -101,6 +101,8 @@ public class IngestHandler extends BaseHandler {
             String gitBranch = session.path("git_branch").asText(null);
             String model = session.path("model").asText(null);
             String endedAt = session.path("ended_at").asText(null);
+            String sessionTagsJson = session.path("session_tags").asText(null);
+            if (sessionTagsJson != null && sessionTagsJson.equals("null")) sessionTagsJson = null;
 
             if (sessionId == null || startedAt == null) continue;
 
@@ -108,8 +110,8 @@ public class IngestHandler extends BaseHandler {
                     INSERT INTO sessions
                         (session_id, project_dir, first_message, started_at,
                          turn_count, tool_call_count, scanned_at, source_instance,
-                         slug, git_branch, model, ended_at)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)
+                         slug, git_branch, model, ended_at, session_tags)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id) DO UPDATE SET
                         turn_count = MAX(turn_count, excluded.turn_count),
                         tool_call_count = MAX(tool_call_count, excluded.tool_call_count),
@@ -117,7 +119,22 @@ public class IngestHandler extends BaseHandler {
                         git_branch = COALESCE(excluded.git_branch, git_branch),
                         model = COALESCE(excluded.model, model),
                         ended_at = COALESCE(excluded.ended_at, ended_at),
-                        source_instance = CASE WHEN source_instance = 'local' THEN excluded.source_instance ELSE source_instance END
+                        source_instance = CASE WHEN source_instance = 'local' THEN excluded.source_instance ELSE source_instance END,
+                        session_tags = CASE
+                            WHEN excluded.session_tags IS NULL THEN session_tags
+                            WHEN session_tags IS NULL THEN excluded.session_tags
+                            ELSE (
+                                SELECT json_group_array(value)
+                                FROM (
+                                    SELECT DISTINCT value
+                                    FROM (
+                                        SELECT value FROM json_each(session_tags)
+                                        UNION ALL
+                                        SELECT value FROM json_each(excluded.session_tags)
+                                    )
+                                )
+                            )
+                        END
                     """)) {
                 ps.setString(1, sessionId);
                 ps.setString(2, projectDir);
@@ -130,6 +147,7 @@ public class IngestHandler extends BaseHandler {
                 ps.setString(9, gitBranch);
                 ps.setString(10, model);
                 ps.setString(11, endedAt);
+                ps.setString(12, sessionTagsJson);
                 count += ps.executeUpdate();
             }
         }

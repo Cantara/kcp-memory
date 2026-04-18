@@ -64,6 +64,10 @@ public class PendingDispatchHandler extends BaseHandler {
 
         String peerId = body.path("peerId").asText(null);
         String prompt = body.path("prompt").asText(null);
+        String notifySlack = body.path("notifySlack").asText(null);
+        if (notifySlack != null && notifySlack.isBlank()) notifySlack = null;
+        String systemPrompt = body.path("systemPrompt").asText(null);
+        if (systemPrompt != null && systemPrompt.isBlank()) systemPrompt = null;
 
         if (peerId == null || peerId.isBlank()) {
             sendError(ex, 400, "Missing required field: peerId");
@@ -74,8 +78,9 @@ public class PendingDispatchHandler extends BaseHandler {
             return;
         }
 
-        String taskId = store.enqueue(peerId, prompt);
-        LOG.info("Enqueued task " + taskId + " for peer " + peerId);
+        String taskId = store.enqueue(peerId, prompt, notifySlack, systemPrompt);
+        LOG.info("Enqueued task " + taskId + " for peer " + peerId
+                + (notifySlack != null ? " (notify: " + notifySlack + ")" : ""));
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("taskId", taskId);
@@ -144,6 +149,7 @@ public class PendingDispatchHandler extends BaseHandler {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("taskId", t.id());
         response.put("prompt", t.prompt());
+        if (t.systemPrompt() != null) response.put("systemPrompt", t.systemPrompt());
         response.put("status", t.status());
         sendJson(ex, 200, response);
     }
@@ -170,6 +176,20 @@ public class PendingDispatchHandler extends BaseHandler {
             store.fail(taskId, error);
         } else {
             store.complete(taskId, result != null ? result : "");
+        }
+
+        // Fire Slack notification if requested at enqueue time
+        try {
+            store.get(taskId).ifPresent(t -> {
+                if (t.notifySlack() != null) {
+                    String msg = error != null
+                            ? "*Task failed* on `" + t.peerId() + "` (id: " + taskId + ")\n" + error
+                            : "*Task complete* on `" + t.peerId() + "` (id: " + taskId + ")\n" + (result != null ? result : "");
+                    SlackNotifier.notifyAsync(t.notifySlack(), msg);
+                }
+            });
+        } catch (Exception e) {
+            LOG.fine("Could not read task for Slack notification: " + e.getMessage());
         }
 
         sendJson(ex, 200, Map.of("ok", true));

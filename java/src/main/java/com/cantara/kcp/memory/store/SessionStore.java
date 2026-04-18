@@ -121,7 +121,7 @@ public class SessionStore {
         String sql = """
                 SELECT s.session_id, s.project_dir, s.git_branch, s.slug, s.model,
                        s.started_at, s.ended_at, s.turn_count, s.tool_call_count,
-                       s.first_message, rank
+                       s.first_message, s.session_tags, rank
                 FROM sessions_fts
                 JOIN sessions s ON sessions_fts.session_id = s.session_id
                 WHERE sessions_fts MATCH ?
@@ -135,30 +135,135 @@ public class SessionStore {
         }
     }
 
-    /** List sessions, optionally filtered by project dir and/or source_instance. Most recent first. */
-    public List<SearchResult> list(String projectDir, String source, int limit) throws SQLException {
+    /** List sessions, optionally filtered by project dir, source_instance, and/or tag. Most recent first. */
+    public List<SearchResult> list(String projectDir, String source, String tag, int limit) throws SQLException {
         boolean fp = projectDir != null && !projectDir.isBlank();
         boolean fs = source != null && !source.isBlank();
+        boolean ft = tag != null && !tag.isBlank();
         StringBuilder sb = new StringBuilder(
                 "SELECT session_id, project_dir, git_branch, slug, model, started_at, ended_at, " +
-                "turn_count, tool_call_count, first_message, source_instance FROM sessions");
-        if (fp || fs) sb.append(" WHERE ");
-        if (fp) sb.append("project_dir = ?");
-        if (fp && fs) sb.append(" AND ");
-        if (fs) sb.append("source_instance = ?");
+                "turn_count, tool_call_count, first_message, source_instance, session_tags FROM sessions");
+        List<String> conditions = new java.util.ArrayList<>();
+        if (fp) conditions.add("project_dir = ?");
+        if (fs) conditions.add("source_instance = ?");
+        if (ft) conditions.add(
+                "EXISTS (SELECT 1 FROM json_each(session_tags) WHERE value LIKE '%' || ? || '%')");
+        if (!conditions.isEmpty()) sb.append(" WHERE ").append(String.join(" AND ", conditions));
         sb.append(" ORDER BY started_at DESC LIMIT ?");
         try (PreparedStatement ps = conn.prepareStatement(sb.toString())) {
             int idx = 1;
             if (fp) ps.setString(idx++, projectDir);
             if (fs) ps.setString(idx++, source);
+            if (ft) ps.setString(idx++, tag);
             ps.setInt(idx, limit);
             return mapResults(ps.executeQuery());
         }
     }
 
+    /** Convenience overload without tag filter. */
+    public List<SearchResult> list(String projectDir, String source, int limit) throws SQLException {
+        return list(projectDir, source, null, limit);
+    }
+
     /** Convenience overload without source filter. */
     public List<SearchResult> list(String projectDir, int limit) throws SQLException {
-        return list(projectDir, null, limit);
+        return list(projectDir, null, null, limit);
+    }
+
+    /**
+     * Resolve a session ID or prefix to a unique full session_id.
+     * Returns null if not found; throws SQLException if prefix is ambiguous.
+     */
+    private String resolveSessionId(String sessionIdOrPrefix) throws SQLException {
+        String exactSql = "SELECT session_id FROM sessions WHERE session_id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(exactSql)) {
+            ps.setString(1, sessionIdOrPrefix);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getString(1);
+            }
+        }
+        String findSql = "SELECT session_id FROM sessions WHERE session_id LIKE ? || '%'";
+        List<String> matches = new java.util.ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(findSql)) {
+            ps.setString(1, sessionIdOrPrefix);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) matches.add(rs.getString(1));
+            }
+        }
+        if (matches.isEmpty()) return null;
+        if (matches.size() > 1) {
+            throw new SQLException("Ambiguous prefix '" + sessionIdOrPrefix +
+                    "' matches " + matches.size() + " sessions — use more characters");
+        }
+        return matches.get(0);
+    }
+
+    /**
+     * Add tags to a session. Accepts full UUID or unique prefix.
+     * Existing tags are preserved; duplicates are silently ignored.
+     * Returns true if a session was updated, false if not found.
+     */
+    public boolean addTags(String sessionIdOrPrefix, List<String> newTags) throws SQLException {
+        String fullId = resolveSessionId(sessionIdOrPrefix);
+        if (fullId == null) return false;
+
+        List<String> existing = readTags(fullId);
+        java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<>(existing);
+        merged.addAll(newTags);
+
+        boolean updated;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE sessions SET session_tags = ? WHERE session_id = ?")) {
+            ps.setString(1, toJson(new java.util.ArrayList<>(merged)));
+            ps.setString(2, fullId);
+            updated = ps.executeUpdate() > 0;
+        }
+
+        // Propagate tags to child agent_sessions (add "subagent" tag automatically)
+        if (updated) {
+            java.util.LinkedHashSet<String> childTags = new java.util.LinkedHashSet<>(merged);
+            childTags.add("subagent");
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE agent_sessions SET session_tags = ? WHERE parent_session_id = ?")) {
+                ps.setString(1, toJson(new java.util.ArrayList<>(childTags)));
+                ps.setString(2, fullId);
+                ps.executeUpdate();
+            }
+        }
+        return updated;
+    }
+
+    /**
+     * Remove tags from a session. Accepts full UUID or unique prefix.
+     * Tags not present are silently ignored.
+     * Returns true if a session was found, false if not found.
+     */
+    public boolean removeTags(String sessionIdOrPrefix, List<String> tagsToRemove) throws SQLException {
+        String fullId = resolveSessionId(sessionIdOrPrefix);
+        if (fullId == null) return false;
+
+        List<String> remaining = new java.util.ArrayList<>(readTags(fullId));
+        remaining.removeAll(tagsToRemove);
+        String newJson = remaining.isEmpty() ? null : toJson(remaining);
+
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE sessions SET session_tags = ? WHERE session_id = ?")) {
+            if (newJson == null) ps.setNull(1, java.sql.Types.VARCHAR);
+            else ps.setString(1, newJson);
+            ps.setString(2, fullId);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    private List<String> readTags(String sessionId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT session_tags FROM sessions WHERE session_id = ?")) {
+            ps.setString(1, sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                String json = rs.next() ? rs.getString(1) : null;
+                return json != null ? fromJson(json) : new java.util.ArrayList<>();
+            }
+        }
     }
 
     /** Aggregate stats. */
@@ -213,6 +318,7 @@ public class SessionStore {
             r.setToolCallCount(rs.getInt("tool_call_count"));
             r.setFirstMessage(rs.getString("first_message"));
             try { r.setSourceInstance(rs.getString("source_instance")); } catch (SQLException ignored) {}
+            try { r.setSessionTags(fromJson(rs.getString("session_tags"))); } catch (SQLException ignored) {}
             try { r.setRank(rs.getDouble("rank")); } catch (SQLException ignored) {}
             out.add(r);
         }

@@ -57,7 +57,7 @@ class PendingTaskPollTest {
         assertEquals("echo hello world", claimed.get().prompt());
 
         // Simulate: peer executes via injectable TaskExecutor
-        TaskExecutor executor = prompt -> "hello world";
+        TaskExecutor executor = (prompt, systemPrompt) -> "hello world";
         String result = executor.execute(claimed.get().prompt());
 
         // Simulate: peer pushes result back
@@ -79,7 +79,7 @@ class PendingTaskPollTest {
         assertTrue(claimed.isPresent());
 
         // Simulate: executor throws
-        TaskExecutor executor = prompt -> { throw new IOException("Process timed out"); };
+        TaskExecutor executor = (prompt, systemPrompt) -> { throw new IOException("Process timed out"); };
         try {
             executor.execute(claimed.get().prompt());
             fail("Should have thrown");

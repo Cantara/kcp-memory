@@ -46,6 +46,7 @@ public class NodesHandler extends BaseHandler {
                     m.put("status", n.status());
                     m.put("sessionCount", n.sessionCount());
                     m.put("eventCount", n.eventCount());
+                    m.put("capabilities", n.capabilities());
                     return m;
                 })
                 .toList();

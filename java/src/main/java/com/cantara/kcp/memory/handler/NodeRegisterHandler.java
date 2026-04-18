@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.logging.Logger;
 
@@ -64,7 +66,13 @@ public class NodeRegisterHandler extends BaseHandler {
             return;
         }
 
-        nodeRegistry.register(peerId, address, displayName);
+        List<String> capabilities = new ArrayList<>();
+        JsonNode capsNode = body.path("capabilities");
+        if (capsNode.isArray()) {
+            capsNode.forEach(c -> { if (c.isTextual()) capabilities.add(c.asText()); });
+        }
+
+        nodeRegistry.register(peerId, address, displayName, List.copyOf(capabilities));
         nodeRegistry.markSeen(peerId);
         nodeRegistry.updateHealth(peerId, sessionCount, 0);
 

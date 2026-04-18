@@ -4,6 +4,7 @@ import com.cantara.kcp.memory.handler.*;
 import com.cantara.kcp.memory.mcp.McpServer;
 import com.cantara.kcp.memory.peer.NodeRegistry;
 import com.cantara.kcp.memory.peer.PeerSyncService;
+import com.cantara.kcp.memory.peer.TaskExecutor;
 import com.cantara.kcp.memory.scanner.AgentSessionScanner;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionFileWatcher;
@@ -12,6 +13,7 @@ import com.cantara.kcp.memory.server.EventBroadcaster;
 import com.cantara.kcp.memory.server.ExternalHttpServer;
 import com.cantara.kcp.memory.server.TcpHttpServer;
 import com.cantara.kcp.memory.store.MemoryDatabase;
+import com.cantara.kcp.memory.store.PendingTagsStore;
 import com.cantara.kcp.memory.store.PendingTaskStore;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.update.UpdateChecker;
@@ -59,6 +61,8 @@ public class KcpMemoryDaemon {
     private ExternalHttpServer externalServer;
     private SessionFileWatcher fileWatcher;
     private String nodeName;
+    private TaskExecutor taskExecutor;
+    private List<String> nodeCapabilities = List.of();
 
     public KcpMemoryDaemon(MemoryDatabase db) {
         this.db = db;
@@ -70,6 +74,16 @@ public class KcpMemoryDaemon {
      */
     public void setNodeName(String name) {
         this.nodeName = name;
+    }
+
+    /** Override the task executor used by peer sync (default: ClaudeTaskExecutor). */
+    public void setTaskExecutor(TaskExecutor executor) {
+        this.taskExecutor = executor;
+    }
+
+    /** Set capabilities advertised in node self-registration (e.g. ["claude"] or ["ironclaw", "deepseek/deepseek-v3.2"]). */
+    public void setCapabilities(List<String> capabilities) {
+        this.nodeCapabilities = capabilities != null ? capabilities : List.of();
     }
 
     public void start() throws Exception {
@@ -105,6 +119,9 @@ public class KcpMemoryDaemon {
         server.createContext("/dispatch/queue", pendingHandler);
         server.createContext("/pending", pendingHandler);
 
+        // Auto-tagging: pending tags from UserPromptSubmit hook
+        server.createContext("/tags/pending", new TagsPendingHandler(db));
+
         server.start();
         LOG.info("kcp-memory daemon started on port " + PORT);
 
@@ -124,7 +141,7 @@ public class KcpMemoryDaemon {
             }
         });
 
-        // Initial scans on startup (includes agent sessions)
+        // Initial scans on startup (includes agent sessions + pending tag flush)
         Thread.ofVirtual().start(() -> {
             LOG.info("Running initial session scan on startup...");
             new SessionScanner(db).scan(false);
@@ -132,6 +149,11 @@ public class KcpMemoryDaemon {
             new AgentSessionScanner(db).scan(false);
             LOG.info("Running initial event log scan on startup...");
             new EventLogScanner(db).scan();
+            try {
+                new PendingTagsStore(db).flush(new SessionStore(db));
+            } catch (Exception e) {
+                LOG.fine("Pending tag flush failed: " + e.getMessage());
+            }
         });
 
         // Live JSONL file watcher — broadcasts new messages to WebSocket clients
@@ -148,6 +170,11 @@ public class KcpMemoryDaemon {
             new SessionScanner(db).scan(false);
             new AgentSessionScanner(db).scan(false);
             new EventLogScanner(db).scan();
+            try {
+                new PendingTagsStore(db).flush(new SessionStore(db));
+            } catch (Exception e) {
+                LOG.fine("Pending tag flush failed: " + e.getMessage());
+            }
         }, 30, 30, TimeUnit.MINUTES);
 
         // Shutdown hook
@@ -174,6 +201,10 @@ public class KcpMemoryDaemon {
         if (nodeName != null && !nodeName.isBlank()) {
             sync.setDisplayName(nodeName);
         }
+        if (taskExecutor != null) {
+            sync.setTaskExecutor(taskExecutor);
+        }
+        sync.setCapabilities(nodeCapabilities);
         sync.start();
         peerSyncServices.add(sync);
     }

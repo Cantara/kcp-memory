@@ -21,6 +21,7 @@ public class Session {
     private String firstMessage;
     private String allUserText;
     private String scannedAt;
+    private List<String> sessionTags;
 
     public Session() {}
 
@@ -65,4 +66,7 @@ public class Session {
 
     public String getScannedAt()             { return scannedAt; }
     public void setScannedAt(String v)       { this.scannedAt = v; }
+
+    public List<String> getSessionTags()          { return sessionTags; }
+    public void setSessionTags(List<String> v)    { this.sessionTags = v; }
 }

@@ -29,7 +29,9 @@ public class PendingTaskStore {
             String claimedAt,
             String completedAt,
             String result,
-            String error
+            String error,
+            String notifySlack,
+            String systemPrompt
     ) {}
 
     private final MemoryDatabase db;
@@ -46,17 +48,44 @@ public class PendingTaskStore {
      * @return the generated task ID (UUID)
      */
     public String enqueue(String peerId, String prompt) throws SQLException {
+        return enqueue(peerId, prompt, null);
+    }
+
+    /**
+     * Queue a new task for a peer with an optional Slack notification target.
+     *
+     * @param peerId      the target peer identifier
+     * @param prompt      the task prompt to execute
+     * @param notifySlack Slack user/channel ID to notify on completion, or null
+     * @return the generated task ID (UUID)
+     */
+    public String enqueue(String peerId, String prompt, String notifySlack) throws SQLException {
+        return enqueue(peerId, prompt, notifySlack, null);
+    }
+
+    /**
+     * Queue a new task for a peer with optional Slack notification and system prompt.
+     *
+     * @param peerId       the target peer identifier
+     * @param prompt       the task prompt to execute
+     * @param notifySlack  Slack user/channel ID to notify on completion, or null
+     * @param systemPrompt optional system prompt / context preamble for the LLM, or null
+     * @return the generated task ID (UUID)
+     */
+    public String enqueue(String peerId, String prompt, String notifySlack, String systemPrompt) throws SQLException {
         String id = UUID.randomUUID().toString();
         String now = Instant.now().toString();
 
         try (PreparedStatement ps = db.getConnection().prepareStatement("""
-                INSERT INTO pending_tasks (id, peer_id, prompt, status, created_at)
-                VALUES (?, ?, ?, 'queued', ?)
+                INSERT INTO pending_tasks (id, peer_id, prompt, status, created_at, notify_slack, system_prompt)
+                VALUES (?, ?, ?, 'queued', ?, ?, ?)
                 """)) {
             ps.setString(1, id);
             ps.setString(2, peerId);
             ps.setString(3, prompt);
             ps.setString(4, now);
+            ps.setString(5, notifySlack);
+            ps.setString(6, systemPrompt);
             ps.executeUpdate();
         }
         return id;
@@ -193,7 +222,9 @@ public class PendingTaskStore {
                 rs.getString("claimed_at"),
                 rs.getString("completed_at"),
                 rs.getString("result"),
-                rs.getString("error")
+                rs.getString("error"),
+                rs.getString("notify_slack"),
+                rs.getString("system_prompt")
         );
     }
 }

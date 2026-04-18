@@ -75,7 +75,11 @@ public class MemoryDatabase implements AutoCloseable {
                 "/db/V4__output_preview.sql",
                 "/db/V5__manifest_version.sql",
                 "/db/V6__peer_sync.sql",
-                "/db/V7__pending_tasks.sql"}) {
+                "/db/V7__pending_tasks.sql",
+                "/db/V8__notify_slack.sql",
+                "/db/V9__system_prompt.sql",
+                "/db/V10__session_labels.sql",
+                "/db/V11__session_auto_tags.sql"}) {
 
             String version = resource.substring(resource.lastIndexOf('/') + 1, resource.lastIndexOf('.'));
 
@@ -127,7 +131,15 @@ public class MemoryDatabase implements AutoCloseable {
                 new MigrationCheck("V6__peer_sync",
                         "SELECT 1 FROM pragma_table_info('sessions') WHERE name='source_instance'"),
                 new MigrationCheck("V7__pending_tasks",
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_tasks'")
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_tasks'"),
+                new MigrationCheck("V8__notify_slack",
+                        "SELECT 1 FROM pragma_table_info('pending_tasks') WHERE name='notify_slack'"),
+                new MigrationCheck("V9__system_prompt",
+                        "SELECT 1 FROM pragma_table_info('pending_tasks') WHERE name='system_prompt'"),
+                new MigrationCheck("V10__session_labels",
+                        "SELECT 1 FROM pragma_table_info('sessions') WHERE name='session_tags'"),
+                new MigrationCheck("V11__session_auto_tags",
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_tags'")
         );
         for (MigrationCheck check : checks) {
             boolean present;

@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
@@ -18,12 +19,18 @@ public class ClaudeTaskExecutor implements TaskExecutor {
     private static final long TIMEOUT_MINUTES = 5;
 
     @Override
-    public String execute(String prompt) throws IOException {
-        ProcessBuilder pb = new ProcessBuilder("claude", "-p", prompt, "--output-format", "text");
+    public String execute(String prompt, String systemPrompt) throws IOException {
+        List<String> cmd = new java.util.ArrayList<>(List.of("claude", "-p", prompt, "--output-format", "text"));
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            cmd.add("--system-prompt");
+            cmd.add(systemPrompt);
+        }
+        ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(true);
 
         LOG.info("Executing task: " + prompt.substring(0, Math.min(prompt.length(), 80)));
         Process process = pb.start();
+        process.getOutputStream().close(); // close stdin so claude doesn't block waiting for EOF
 
         StringBuilder output = new StringBuilder();
         try (BufferedReader reader = new BufferedReader(

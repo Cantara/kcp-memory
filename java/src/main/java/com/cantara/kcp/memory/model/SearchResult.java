@@ -1,5 +1,7 @@
 package com.cantara.kcp.memory.model;
 
+import java.util.List;
+
 /**
  * A session returned by a full-text or filtered search.
  */
@@ -17,6 +19,7 @@ public class SearchResult {
     private String firstMessage;
     private double rank;        // FTS rank (lower = more relevant), 0 if non-FTS
     private String sourceInstance;   // "local" = this node, otherwise the peerId of the source node
+    private List<String> sessionTags; // user-assigned tags (V10), may be null
 
     public SearchResult() {}
 
@@ -55,4 +58,7 @@ public class SearchResult {
 
     public String getSourceInstance()          { return sourceInstance; }
     public void setSourceInstance(String v)    { this.sourceInstance = v; }
+
+    public List<String> getSessionTags()            { return sessionTags; }
+    public void setSessionTags(List<String> v)      { this.sessionTags = v; }
 }

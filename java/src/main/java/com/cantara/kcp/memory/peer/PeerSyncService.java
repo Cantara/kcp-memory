@@ -71,6 +71,7 @@ public class PeerSyncService {
     private ScheduledExecutorService scheduler;
     private NodeRegistry nodeRegistry;
     private TaskExecutor taskExecutor;
+    private List<String> capabilities = List.of();
 
     /**
      * @param db              local database
@@ -157,6 +158,14 @@ public class PeerSyncService {
         this.taskExecutor = executor;
     }
 
+    /**
+     * Set capabilities advertised by this node in self-registration payloads.
+     * E.g. ["claude"] for Claude Code nodes, ["ironclaw", "deepseek/deepseek-v3.2"] for IronClaw.
+     */
+    public void setCapabilities(List<String> capabilities) {
+        this.capabilities = capabilities != null ? capabilities : List.of();
+    }
+
     /** This instance's identifier (hostname or configured ID). */
     public String getLocalInstanceId() {
         return localInstanceId;
@@ -195,13 +204,16 @@ public class PeerSyncService {
                 try { localSessions = new SessionStore(db).stats().totalSessions(); } catch (Exception ignored) {}
                 String effectiveDisplayName = (displayName != null && !displayName.isBlank())
                         ? displayName : localInstanceId;
-                String registerPayload = JSON.writeValueAsString(
-                        JSON.createObjectNode()
-                                .put("peerId", localInstanceId)
-                                .put("displayName", effectiveDisplayName)
-                                .put("address", peerUri)
-                                .put("sessionCount", localSessions));
-                postJson(baseUrl + "/nodes/register", registerPayload);
+                ObjectNode registerNode = JSON.createObjectNode()
+                        .put("peerId", localInstanceId)
+                        .put("displayName", effectiveDisplayName)
+                        .put("address", peerUri)
+                        .put("sessionCount", localSessions);
+                if (!capabilities.isEmpty()) {
+                    com.fasterxml.jackson.databind.node.ArrayNode capsArray = registerNode.putArray("capabilities");
+                    capabilities.forEach(capsArray::add);
+                }
+                postJson(baseUrl + "/nodes/register", JSON.writeValueAsString(registerNode));
             } catch (Exception e) {
                 LOG.fine("Could not self-register with hub: " + e.getMessage());
             }
@@ -235,6 +247,8 @@ public class PeerSyncService {
             JsonNode task = JSON.readTree(response.body());
             String taskId = task.path("taskId").asText(null);
             String prompt = task.path("prompt").asText(null);
+            String systemPrompt = task.has("systemPrompt") && !task.get("systemPrompt").isNull()
+                    ? task.get("systemPrompt").asText(null) : null;
 
             if (taskId == null || prompt == null) return;
 
@@ -244,7 +258,7 @@ public class PeerSyncService {
             TaskExecutor executor = this.taskExecutor != null ? this.taskExecutor : new ClaudeTaskExecutor();
             String result;
             try {
-                result = executor.execute(prompt);
+                result = executor.execute(prompt, systemPrompt);
             } catch (IOException e) {
                 LOG.warning("Task " + taskId + " failed: " + e.getMessage());
                 // Push error back
@@ -302,6 +316,8 @@ public class PeerSyncService {
             String gitBranch = session.path("git_branch").asText(null);
             String model = session.path("model").asText(null);
             String endedAt = session.path("ended_at").asText(null);
+            String sessionTagsJson = session.path("session_tags").asText(null);
+            if (sessionTagsJson != null && sessionTagsJson.equals("null")) sessionTagsJson = null;
 
             if (sessionId == null || startedAt == null) continue;
 
@@ -309,15 +325,30 @@ public class PeerSyncService {
                     INSERT INTO sessions
                         (session_id, project_dir, first_message, started_at,
                          turn_count, tool_call_count, scanned_at, source_instance,
-                         slug, git_branch, model, ended_at)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)
+                         slug, git_branch, model, ended_at, session_tags)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id) DO UPDATE SET
                         turn_count = MAX(turn_count, excluded.turn_count),
                         tool_call_count = MAX(tool_call_count, excluded.tool_call_count),
                         slug = COALESCE(excluded.slug, slug),
                         git_branch = COALESCE(excluded.git_branch, git_branch),
                         model = COALESCE(excluded.model, model),
-                        ended_at = COALESCE(excluded.ended_at, ended_at)
+                        ended_at = COALESCE(excluded.ended_at, ended_at),
+                        session_tags = CASE
+                            WHEN excluded.session_tags IS NULL THEN session_tags
+                            WHEN session_tags IS NULL THEN excluded.session_tags
+                            ELSE (
+                                SELECT json_group_array(value)
+                                FROM (
+                                    SELECT DISTINCT value
+                                    FROM (
+                                        SELECT value FROM json_each(session_tags)
+                                        UNION ALL
+                                        SELECT value FROM json_each(excluded.session_tags)
+                                    )
+                                )
+                            )
+                        END
                     """)) {
                 ps.setString(1, sessionId);
                 ps.setString(2, projectDir);
@@ -330,6 +361,7 @@ public class PeerSyncService {
                 ps.setString(9, gitBranch);
                 ps.setString(10, model);
                 ps.setString(11, endedAt);
+                ps.setString(12, sessionTagsJson);
                 ps.executeUpdate();
             }
 
@@ -421,7 +453,7 @@ public class PeerSyncService {
         try (PreparedStatement ps = db.getConnection().prepareStatement(
                 "SELECT session_id, project_dir, first_message, started_at, " +
                 "turn_count, tool_call_count, source_instance, " +
-                "slug, git_branch, model, ended_at " +
+                "slug, git_branch, model, ended_at, session_tags " +
                 "FROM sessions" + whereClause + " ORDER BY started_at ASC LIMIT 100")) {
             if (since != null) ps.setString(1, since);
             try (ResultSet rs = ps.executeQuery()) {
@@ -437,7 +469,8 @@ public class PeerSyncService {
                             .put("slug", rs.getString("slug"))
                             .put("git_branch", rs.getString("git_branch"))
                             .put("model", rs.getString("model"))
-                            .put("ended_at", rs.getString("ended_at"));
+                            .put("ended_at", rs.getString("ended_at"))
+                            .put("session_tags", rs.getString("session_tags"));
                     localSessions.add(node);
                 }
             }

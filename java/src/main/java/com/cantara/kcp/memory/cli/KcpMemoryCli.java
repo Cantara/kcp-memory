@@ -2,6 +2,7 @@ package com.cantara.kcp.memory.cli;
 
 import com.cantara.kcp.memory.KcpMemoryDaemon;
 import com.cantara.kcp.memory.mcp.McpServer;
+import com.cantara.kcp.memory.peer.HttpTaskExecutor;
 import com.cantara.kcp.memory.mcp.UsageLogger;
 import com.cantara.kcp.memory.model.AgentSession;
 import com.cantara.kcp.memory.model.ManifestQualityRecord;
@@ -34,7 +35,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = "0.27.0",
+        version = "0.31.0",
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
@@ -46,7 +47,8 @@ import java.util.concurrent.Callable;
                 KcpMemoryCli.EventsCmd.class,
                 KcpMemoryCli.AgentsCmd.class,
                 KcpMemoryCli.McpCmd.class,
-                KcpMemoryCli.UpdateCmd.class
+                KcpMemoryCli.UpdateCmd.class,
+                KcpMemoryCli.TagCmd.class
         }
 )
 public class KcpMemoryCli implements Callable<Integer> {
@@ -109,6 +111,24 @@ public class KcpMemoryCli implements Callable<Integer> {
             daemon.start();
             System.out.printf("[kcp-memory] daemon running on port %d — press Ctrl+C to stop%n",
                     KcpMemoryDaemon.PORT);
+
+            // Executor selection: EXECUTOR_TYPE=http uses OpenAI-compatible endpoint (IronClaw nodes)
+            String executorType = System.getenv().getOrDefault("EXECUTOR_TYPE", "claude");
+            if ("http".equalsIgnoreCase(executorType)) {
+                String executorBaseUrl = System.getenv("EXECUTOR_BASE_URL");
+                String executorApiKey  = System.getenv("EXECUTOR_API_KEY");
+                String executorModel   = System.getenv("EXECUTOR_MODEL");
+                if (executorBaseUrl == null || executorApiKey == null || executorModel == null) {
+                    System.err.println("ERROR: EXECUTOR_TYPE=http requires EXECUTOR_BASE_URL, EXECUTOR_API_KEY, EXECUTOR_MODEL");
+                    return 1;
+                }
+                daemon.setTaskExecutor(new HttpTaskExecutor(executorBaseUrl, executorApiKey, executorModel));
+                System.out.printf("[kcp-memory] task executor: http (%s)%n", executorModel);
+            }
+            String capsEnv = System.getenv("EXECUTOR_CAPABILITIES");
+            if (capsEnv != null && !capsEnv.isBlank()) {
+                daemon.setCapabilities(List.of(capsEnv.split(",")));
+            }
 
             // Start peer sync if --peer specified
             if (peerUris != null) {
@@ -224,6 +244,9 @@ public class KcpMemoryCli implements Callable<Integer> {
         @Option(names = {"--project", "-p"}, description = "Filter by project directory")
         String project;
 
+        @Option(names = {"--tag", "-t"}, description = "Filter by tag (substring match)")
+        String tag;
+
         @Option(names = {"--limit", "-n"}, description = "Max results (default: 20)", defaultValue = "20")
         int limit;
 
@@ -231,14 +254,15 @@ public class KcpMemoryCli implements Callable<Integer> {
         public Integer call() throws Exception {
             try (MemoryDatabase db = new MemoryDatabase()) {
                 SessionStore store = new SessionStore(db);
-                List<SearchResult> sessions = store.list(project, limit);
+                List<SearchResult> sessions = store.list(project, null, tag, limit);
                 if (sessions.isEmpty()) {
                     System.out.println("[kcp-memory] no sessions indexed yet. Run: kcp-memory scan");
                     return 0;
                 }
-                System.out.printf("[kcp-memory] %d session(s)%s%n%n",
+                System.out.printf("[kcp-memory] %d session(s)%s%s%n%n",
                         sessions.size(),
-                        project != null ? " in " + project : "");
+                        project != null ? " in " + project : "",
+                        tag != null ? " [tag~" + tag + "]" : "");
                 for (SearchResult r : sessions) {
                     printSession(r);
                 }
@@ -593,6 +617,38 @@ public class KcpMemoryCli implements Callable<Integer> {
     }
 
     // ------------------------------------------------------------------
+    // tag — add/remove tags on a session
+    // ------------------------------------------------------------------
+    @Command(name = "tag", description = "Add tags to a session. Use --remove to remove tags instead.")
+    static class TagCmd implements Callable<Integer> {
+
+        @Parameters(index = "0", description = "Session ID or unique prefix (e.g. first 8 chars from 'list')")
+        String sessionId;
+
+        @Parameters(index = "1..*", description = "Tag(s) to add or remove (e.g. ExoCortex-CC mynder pr-919)")
+        List<String> tags;
+
+        @Option(names = {"--remove", "-r"}, description = "Remove the specified tags instead of adding them")
+        boolean remove;
+
+        @Override
+        public Integer call() throws Exception {
+            try (MemoryDatabase db = new MemoryDatabase()) {
+                SessionStore store = new SessionStore(db);
+                boolean updated = remove ? store.removeTags(sessionId, tags) : store.addTags(sessionId, tags);
+                if (updated) {
+                    String action = remove ? "removed tags from" : "tagged";
+                    System.out.printf("[kcp-memory] %s %s → %s%n", action, sessionId, tags);
+                    return 0;
+                } else {
+                    System.err.printf("[kcp-memory] session not found: %s%n", sessionId);
+                    return 1;
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // mcp — stdio MCP server for Claude Code integration
     // ------------------------------------------------------------------
     @Command(name = "mcp", description = "Start the kcp-memory MCP stdio server (for ~/.claude/settings.json mcpServers)")
@@ -691,8 +747,12 @@ public class KcpMemoryCli implements Callable<Integer> {
     // Shared formatting
     // ------------------------------------------------------------------
     private static void printSession(SearchResult r) {
-        System.out.printf("  %s  %s%n", r.getStartedAt() != null ? r.getStartedAt().substring(0, 10) : "?",
-                r.getProjectDir());
+        List<String> tags = r.getSessionTags();
+        String tagPart = (tags != null && !tags.isEmpty())
+                ? "  " + tags.stream().map(t -> "#" + t).collect(java.util.stream.Collectors.joining(" "))
+                : "";
+        System.out.printf("  %s  %s%s%n", r.getStartedAt() != null ? r.getStartedAt().substring(0, 10) : "?",
+                r.getProjectDir(), tagPart);
         System.out.printf("  %s  turns=%d  tools=%d%n",
                 r.getSessionId().substring(0, Math.min(8, r.getSessionId().length())),
                 r.getTurnCount(), r.getToolCallCount());
