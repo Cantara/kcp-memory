@@ -20,6 +20,7 @@ public class NodeRegistry {
      */
     public record NodeInfo(
             String peerId,
+            String displayName,
             String address,
             Instant lastSeen,
             String status,
@@ -29,6 +30,7 @@ public class NodeRegistry {
 
     private record MutableNode(
             String peerId,
+            String displayName,
             String address,
             Instant lastSeen,
             String status,
@@ -36,17 +38,31 @@ public class NodeRegistry {
             long eventCount
     ) {
         NodeInfo toInfo() {
-            return new NodeInfo(peerId, address, lastSeen, status, sessionCount, eventCount);
+            return new NodeInfo(peerId, displayName, address, lastSeen, status, sessionCount, eventCount);
         }
     }
 
     private final ConcurrentMap<String, MutableNode> nodes = new ConcurrentHashMap<>();
 
     /**
+     * Register a peer node with a friendly display name.
+     * If already registered, updates the address, displayName, and resets lastSeen.
+     *
+     * @param peerId      unique peer identifier (e.g., hostname)
+     * @param address     peer address (e.g., ssh://user@host or "local")
+     * @param displayName friendly name shown in UIs (e.g., "Mimir", "Klaw"); defaults to peerId if null/blank
+     */
+    public void register(String peerId, String address, String displayName) {
+        String name = (displayName != null && !displayName.isBlank()) ? displayName : peerId;
+        nodes.put(peerId, new MutableNode(peerId, name, address, Instant.now(), "ok", 0, 0));
+    }
+
+    /**
      * Register a peer node. If already registered, updates the address and resets lastSeen.
+     * Display name defaults to peerId.
      */
     public void register(String peerId, String address) {
-        nodes.put(peerId, new MutableNode(peerId, address, Instant.now(), "ok", 0, 0));
+        register(peerId, address, peerId);
     }
 
     /**
@@ -54,7 +70,7 @@ public class NodeRegistry {
      */
     public void updateHealth(String peerId, long sessionCount, long eventCount) {
         nodes.computeIfPresent(peerId, (id, old) ->
-                new MutableNode(id, old.address, Instant.now(), old.status, sessionCount, eventCount));
+                new MutableNode(id, old.displayName, old.address, Instant.now(), old.status, sessionCount, eventCount));
     }
 
     /**
@@ -62,7 +78,7 @@ public class NodeRegistry {
      */
     public void markSeen(String peerId) {
         nodes.computeIfPresent(peerId, (id, old) ->
-                new MutableNode(id, old.address, Instant.now(), old.status, old.sessionCount, old.eventCount));
+                new MutableNode(id, old.displayName, old.address, Instant.now(), old.status, old.sessionCount, old.eventCount));
     }
 
     /**

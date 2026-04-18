@@ -16,6 +16,7 @@ public class SearchResult {
     private int toolCallCount;
     private String firstMessage;
     private double rank;        // FTS rank (lower = more relevant), 0 if non-FTS
+    private String sourceInstance;   // "local" = this node, otherwise the peerId of the source node
 
     public SearchResult() {}
 
@@ -51,4 +52,7 @@ public class SearchResult {
 
     public double getRank()               { return rank; }
     public void setRank(double v)         { this.rank = v; }
+
+    public String getSourceInstance()          { return sourceInstance; }
+    public void setSourceInstance(String v)    { this.sourceInstance = v; }
 }

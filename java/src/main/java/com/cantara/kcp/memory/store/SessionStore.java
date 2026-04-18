@@ -135,21 +135,30 @@ public class SessionStore {
         }
     }
 
-    /** List sessions, optionally filtered by project dir. Most recent first. */
-    public List<SearchResult> list(String projectDir, int limit) throws SQLException {
-        boolean filtered = projectDir != null && !projectDir.isBlank();
-        String sql = filtered
-                ? "SELECT session_id, project_dir, git_branch, slug, model, started_at, ended_at, turn_count, tool_call_count, first_message FROM sessions WHERE project_dir = ? ORDER BY started_at DESC LIMIT ?"
-                : "SELECT session_id, project_dir, git_branch, slug, model, started_at, ended_at, turn_count, tool_call_count, first_message FROM sessions ORDER BY started_at DESC LIMIT ?";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            if (filtered) {
-                ps.setString(1, projectDir);
-                ps.setInt(2, limit);
-            } else {
-                ps.setInt(1, limit);
-            }
+    /** List sessions, optionally filtered by project dir and/or source_instance. Most recent first. */
+    public List<SearchResult> list(String projectDir, String source, int limit) throws SQLException {
+        boolean fp = projectDir != null && !projectDir.isBlank();
+        boolean fs = source != null && !source.isBlank();
+        StringBuilder sb = new StringBuilder(
+                "SELECT session_id, project_dir, git_branch, slug, model, started_at, ended_at, " +
+                "turn_count, tool_call_count, first_message, source_instance FROM sessions");
+        if (fp || fs) sb.append(" WHERE ");
+        if (fp) sb.append("project_dir = ?");
+        if (fp && fs) sb.append(" AND ");
+        if (fs) sb.append("source_instance = ?");
+        sb.append(" ORDER BY started_at DESC LIMIT ?");
+        try (PreparedStatement ps = conn.prepareStatement(sb.toString())) {
+            int idx = 1;
+            if (fp) ps.setString(idx++, projectDir);
+            if (fs) ps.setString(idx++, source);
+            ps.setInt(idx, limit);
             return mapResults(ps.executeQuery());
         }
+    }
+
+    /** Convenience overload without source filter. */
+    public List<SearchResult> list(String projectDir, int limit) throws SQLException {
+        return list(projectDir, null, limit);
     }
 
     /** Aggregate stats. */
@@ -203,6 +212,7 @@ public class SessionStore {
             r.setTurnCount(rs.getInt("turn_count"));
             r.setToolCallCount(rs.getInt("tool_call_count"));
             r.setFirstMessage(rs.getString("first_message"));
+            try { r.setSourceInstance(rs.getString("source_instance")); } catch (SQLException ignored) {}
             try { r.setRank(rs.getDouble("rank")); } catch (SQLException ignored) {}
             out.add(r);
         }

@@ -80,6 +80,26 @@ public class EventStore {
         return results;
     }
 
+    /** List events newer than a given timestamp (for peer sync). Most recent first. */
+    public List<ToolEvent> listSince(String since, int limit) throws SQLException {
+        String sql = since != null
+                ? "SELECT * FROM tool_events WHERE event_ts > ? ORDER BY event_ts ASC LIMIT ?"
+                : "SELECT * FROM tool_events ORDER BY event_ts DESC LIMIT ?";
+        List<ToolEvent> results = new ArrayList<>();
+        try (PreparedStatement ps = db.getConnection().prepareStatement(sql)) {
+            if (since != null) {
+                ps.setString(1, since);
+                ps.setInt(2, limit);
+            } else {
+                ps.setInt(1, limit);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) results.add(mapRow(rs));
+            }
+        }
+        return results;
+    }
+
     /** Total number of indexed events. */
     public long count() throws SQLException {
         try (Statement st = db.getConnection().createStatement();

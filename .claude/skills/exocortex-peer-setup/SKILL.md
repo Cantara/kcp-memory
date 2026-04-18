@@ -26,8 +26,8 @@ You're in the right place if:
 ## Quick Start
 
 ```bash
-# On EC2-A (hub): peer with EC2-B
-kcp-memory daemon --peer ssh://ec2-user@ec2-b.internal
+# On EC2-A (hub): peer with EC2-B, with friendly name
+kcp-memory daemon --peer ssh://ec2-user@ec2-b.internal --name Mimir
 
 # On EC2-B: peer with EC2-A
 kcp-memory daemon --peer ssh://ec2-user@ec2-a.internal
@@ -35,6 +35,62 @@ kcp-memory daemon --peer ssh://ec2-user@ec2-a.internal
 # Verify sync is working (run on either instance)
 curl -s http://localhost:7735/stats | jq '.peer_sync'
 ```
+
+## Node Naming (`--name`)
+
+Each daemon can advertise a friendly display name (instead of the bare hostname):
+
+```bash
+kcp-memory daemon --name Mimir --serve 127.0.0.1:8443 ...
+kcp-memory daemon --name Klaw  --peer ssh://ec2-user@ironclaw0
+kcp-memory daemon --name X1-Carbon --peer ssh://ec2-user@ironclaw0
+```
+
+The name appears in `/nodes` as `displayName` and is shown in the Android app's
+Dashboard and NodeDetailScreen. Without `--name`, the hostname is used.
+
+**Systemd gotcha**: If `ExecStart=` spans multiple lines with `\` continuation,
+`sed -i` replacements often fail silently. Write the full command as one line,
+or rewrite the entire `[Service]` block with a heredoc:
+
+```bash
+sudo tee /etc/systemd/system/kcp-memory.service <<'EOF'
+[Unit]
+Description=kcp-memory daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/java -jar /home/ec2-user/.kcp/kcp-memory-daemon.jar daemon --name Mimir --serve 127.0.0.1:8443 --api-key ${KCP_API_KEY}
+Restart=always
+RestartSec=5
+Environment=KCP_API_KEY=<your-key>
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart kcp-memory
+```
+
+## EC2-to-EC2 SSH Key Setup
+
+When adding a new EC2 node (e.g. Klaw/ironclaw1) that needs to SSH into the hub
+(ironclaw0), the new node needs its own key pair and the hub needs to trust it:
+
+```bash
+# On Klaw (the new node):
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub   # copy this
+
+# On Mimir (the hub): append the public key
+echo "<paste-public-key-here>" >> ~/.ssh/authorized_keys
+
+# Back on Klaw: first connection (accept host key)
+ssh -o StrictHostKeyChecking=accept-new ec2-user@<mimir-internal-ip> echo OK
+```
+
+`StrictHostKeyChecking=accept-new` accepts the host key on first connect and
+saves it to `~/.ssh/known_hosts` — avoids interactive prompts in systemd.
 
 ## Overview
 

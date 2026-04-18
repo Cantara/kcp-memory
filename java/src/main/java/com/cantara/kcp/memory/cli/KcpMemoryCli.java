@@ -34,7 +34,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = "0.22.0",
+        version = "0.27.0",
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
@@ -94,16 +94,23 @@ public class KcpMemoryCli implements Callable<Integer> {
                 defaultValue = "synthesis search")
         private String synthesisCmd;
 
+        @Option(names = "--name",
+                description = "Friendly display name for this node in /nodes listings (default: hostname)")
+        private String nodeName;
+
         @Override
         public Integer call() throws Exception {
             MemoryDatabase db = new MemoryDatabase();
             KcpMemoryDaemon daemon = new KcpMemoryDaemon(db);
+            // Resolve display name: --name flag takes priority, then hostname
+            String localId = java.net.InetAddress.getLocalHost().getHostName();
+            String effectiveName = (nodeName != null && !nodeName.isBlank()) ? nodeName : localId;
+            daemon.setNodeName(effectiveName);
             daemon.start();
             System.out.printf("[kcp-memory] daemon running on port %d — press Ctrl+C to stop%n",
                     KcpMemoryDaemon.PORT);
 
             // Start peer sync if --peer specified
-            String localId = java.net.InetAddress.getLocalHost().getHostName();
             if (peerUris != null) {
                 for (String uri : peerUris) {
                     System.out.printf("[kcp-memory] starting peer sync with %s%n", uri);

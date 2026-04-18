@@ -6,12 +6,14 @@ import com.cantara.kcp.memory.peer.NodeRegistry;
 import com.cantara.kcp.memory.peer.PeerSyncService;
 import com.cantara.kcp.memory.scanner.AgentSessionScanner;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
+import com.cantara.kcp.memory.scanner.SessionFileWatcher;
 import com.cantara.kcp.memory.scanner.SessionScanner;
 import com.cantara.kcp.memory.server.EventBroadcaster;
 import com.cantara.kcp.memory.server.ExternalHttpServer;
 import com.cantara.kcp.memory.server.TcpHttpServer;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.PendingTaskStore;
+import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.update.UpdateChecker;
 
 import java.nio.file.Path;
@@ -55,9 +57,19 @@ public class KcpMemoryDaemon {
     private ScheduledExecutorService scheduler;
     private final List<PeerSyncService> peerSyncServices = new ArrayList<>();
     private ExternalHttpServer externalServer;
+    private SessionFileWatcher fileWatcher;
+    private String nodeName;
 
     public KcpMemoryDaemon(MemoryDatabase db) {
         this.db = db;
+    }
+
+    /**
+     * Set a friendly display name for this node (shown in /nodes listings).
+     * Call before start() / startPeerSync() / startExternalServer().
+     */
+    public void setNodeName(String name) {
+        this.nodeName = name;
     }
 
     public void start() throws Exception {
@@ -74,6 +86,10 @@ public class KcpMemoryDaemon {
         server.createContext("/events/search", new EventsHandler(db));
         server.createContext("/ingest",        ingestHandler);
         server.createContext("/nodes",         new NodesHandler(nodeRegistry));
+        server.createContext("/nodes/register", new NodeRegisterHandler(nodeRegistry));
+
+        // Session content (JSONL transcript reader)
+        server.createContext("/sessions/", new SessionContentHandler(db));
 
         // File browser (hub-local)
         FileHandler fileHandler = new FileHandler();
@@ -118,6 +134,10 @@ public class KcpMemoryDaemon {
             new EventLogScanner(db).scan();
         });
 
+        // Live JSONL file watcher — broadcasts new messages to WebSocket clients
+        fileWatcher = new SessionFileWatcher(broadcaster);
+        fileWatcher.start();
+
         // Background scan every 30 minutes
         scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "kcp-memory-scheduler");
@@ -134,6 +154,7 @@ public class KcpMemoryDaemon {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOG.info("Shutting down kcp-memory daemon...");
             scheduler.shutdownNow();
+            if (fileWatcher != null) fileWatcher.stop();
             peerSyncServices.forEach(PeerSyncService::stop);
             if (externalServer != null) externalServer.stop();
             server.stop();
@@ -143,12 +164,16 @@ public class KcpMemoryDaemon {
 
     /**
      * Start bidirectional peer sync. Call after start(). Repeatable.
-     * @param peerUri ssh://user@host or tcp://host:port
+     *
+     * @param peerUri         ssh://user@host or tcp://host:port
      * @param localInstanceId this instance's identifier (hostname)
      */
     public void startPeerSync(String peerUri, String localInstanceId) {
         PeerSyncService sync = new PeerSyncService(db, peerUri, localInstanceId);
         sync.setNodeRegistry(nodeRegistry);
+        if (nodeName != null && !nodeName.isBlank()) {
+            sync.setDisplayName(nodeName);
+        }
         sync.start();
         peerSyncServices.add(sync);
     }
@@ -166,11 +191,13 @@ public class KcpMemoryDaemon {
         externalServer.createContext("/health", new HealthHandler(db));
         externalServer.createContext("/search", new SearchHandler(db));
         externalServer.createContext("/sessions", new ListHandler(db));
+        externalServer.createContext("/sessions/", new SessionContentHandler(db));
         externalServer.createContext("/stats", new StatsHandler(db));
         externalServer.createContext("/events/search", new EventsHandler(db));
 
         // Control plane endpoints
         externalServer.createContext("/nodes", new NodesHandler(nodeRegistry));
+        externalServer.createContext("/nodes/register", new NodeRegisterHandler(nodeRegistry));
         externalServer.createContext("/ws", new WsHandler(broadcaster));
 
         // File browser + process control (hub-local, available externally)
@@ -191,6 +218,19 @@ public class KcpMemoryDaemon {
                 new SynthesisProxyHandler(synthesisCmd != null ? synthesisCmd : "synthesis search"));
 
         externalServer.start();
+
+        // Self-register hub in its own NodeRegistry so it appears in /nodes
+        try {
+            String hubId = java.net.InetAddress.getLocalHost().getHostName();
+            String hubDisplayName = (nodeName != null && !nodeName.isBlank()) ? nodeName : hubId;
+            long hubSessions = 0;
+            try { hubSessions = new SessionStore(db).stats().totalSessions(); } catch (Exception ignored) {}
+            nodeRegistry.register(hubId, "local", hubDisplayName);
+            nodeRegistry.markSeen(hubId);
+            nodeRegistry.updateHealth(hubId, hubSessions, 0);
+        } catch (Exception e) {
+            // non-fatal
+        }
     }
 
     public void stop() {

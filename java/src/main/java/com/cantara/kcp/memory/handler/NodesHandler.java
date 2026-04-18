@@ -37,14 +37,17 @@ public class NodesHandler extends BaseHandler {
         List<NodeRegistry.NodeInfo> nodes = registry.list();
 
         List<Map<String, Object>> result = nodes.stream()
-                .map(n -> Map.<String, Object>of(
-                        "peerId", n.peerId(),
-                        "address", n.address(),
-                        "lastSeen", n.lastSeen().toString(),
-                        "status", n.status(),
-                        "sessionCount", n.sessionCount(),
-                        "eventCount", n.eventCount()
-                ))
+                .<Map<String, Object>>map(n -> {
+                    java.util.LinkedHashMap<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("peerId", n.peerId());
+                    m.put("displayName", n.displayName());
+                    m.put("address", n.address());
+                    m.put("lastSeen", n.lastSeen().toString());
+                    m.put("status", n.status());
+                    m.put("sessionCount", n.sessionCount());
+                    m.put("eventCount", n.eventCount());
+                    return m;
+                })
                 .toList();
 
         sendJson(ex, 200, result);

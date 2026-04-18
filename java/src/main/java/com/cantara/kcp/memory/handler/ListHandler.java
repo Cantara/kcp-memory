@@ -28,12 +28,13 @@ public class ListHandler extends BaseHandler {
         }
         Map<String, String> params = queryParams(ex);
         String projectDir = params.get("project");
+        String source = params.get("source");
         int limit = 50;
         try { limit = Integer.parseInt(params.getOrDefault("limit", "50")); }
         catch (NumberFormatException ignored) {}
 
         try {
-            List<SearchResult> sessions = sessionStore.list(projectDir, limit);
+            List<SearchResult> sessions = sessionStore.list(projectDir, source, limit);
             sendJson(ex, 200, Map.of(
                     "project", projectDir != null ? projectDir : "",
                     "count", sessions.size(),

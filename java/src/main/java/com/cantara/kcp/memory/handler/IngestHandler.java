@@ -84,6 +84,9 @@ public class IngestHandler extends BaseHandler {
         JsonNode sessions = body.get("sessions");
         if (sessions == null || !sessions.isArray()) return 0;
 
+        // Sender identifies itself so we can remap "local" to the real peerId
+        String senderPeerId = body.path("sourceNode").asText(null);
+
         int count = 0;
         for (JsonNode session : sessions) {
             String sessionId = session.path("session_id").asText(null);
@@ -91,16 +94,30 @@ public class IngestHandler extends BaseHandler {
             String firstMessage = session.path("first_message").asText("");
             String startedAt = session.path("started_at").asText(null);
             String source = session.path("source_instance").asText("unknown");
+            if ("local".equals(source) && senderPeerId != null) source = senderPeerId;
             int turnCount = session.path("turn_count").asInt(0);
             int toolCallCount = session.path("tool_call_count").asInt(0);
+            String slug = session.path("slug").asText(null);
+            String gitBranch = session.path("git_branch").asText(null);
+            String model = session.path("model").asText(null);
+            String endedAt = session.path("ended_at").asText(null);
 
             if (sessionId == null || startedAt == null) continue;
 
             try (PreparedStatement ps = db.getConnection().prepareStatement("""
-                    INSERT OR IGNORE INTO sessions
+                    INSERT INTO sessions
                         (session_id, project_dir, first_message, started_at,
-                         turn_count, tool_call_count, scanned_at, source_instance)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)
+                         turn_count, tool_call_count, scanned_at, source_instance,
+                         slug, git_branch, model, ended_at)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        turn_count = MAX(turn_count, excluded.turn_count),
+                        tool_call_count = MAX(tool_call_count, excluded.tool_call_count),
+                        slug = COALESCE(excluded.slug, slug),
+                        git_branch = COALESCE(excluded.git_branch, git_branch),
+                        model = COALESCE(excluded.model, model),
+                        ended_at = COALESCE(excluded.ended_at, ended_at),
+                        source_instance = CASE WHEN source_instance = 'local' THEN excluded.source_instance ELSE source_instance END
                     """)) {
                 ps.setString(1, sessionId);
                 ps.setString(2, projectDir);
@@ -109,6 +126,10 @@ public class IngestHandler extends BaseHandler {
                 ps.setInt(5, turnCount);
                 ps.setInt(6, toolCallCount);
                 ps.setString(7, source);
+                ps.setString(8, slug);
+                ps.setString(9, gitBranch);
+                ps.setString(10, model);
+                ps.setString(11, endedAt);
                 count += ps.executeUpdate();
             }
         }

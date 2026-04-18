@@ -122,6 +122,8 @@ public class ExternalHttpServer {
             }
         } catch (IOException e) {
             LOG.fine("External request error: " + e.getMessage());
+        } catch (Exception e) {
+            LOG.warning("Unhandled exception in external handler: " + e);
         }
     }
 

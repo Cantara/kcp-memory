@@ -361,9 +361,16 @@ The HTTP daemon runs on `http://localhost:7735`:
 | `/health` | GET | Liveness check + session count + version |
 | `/search?q=<query>&limit=20` | GET | FTS5 search over session transcripts |
 | `/sessions?project=<dir>&limit=50` | GET | List recent sessions |
+| `/sessions/<id>` | GET | Full JSONL transcript for a session *(v0.27.0)* |
 | `/stats` | GET | Aggregate statistics |
 | `/scan?force=true` | POST | Trigger an incremental scan (async) |
 | `/events/search?q=<query>&limit=20` | GET | FTS5 search over tool-call events *(v0.2.0)* |
+| `/nodes` | GET | List all connected ExoCortex nodes *(v0.26.0)* |
+| `/nodes/register` | POST | Register/update a node's session count *(v0.27.0)* |
+| `/dispatch/queue` | POST | Enqueue a task for a peer node `{peerId, prompt}` *(v0.27.0)* |
+| `/dispatch/queue?peer=X&limit=N` | GET | List tasks + results for a peer *(v0.27.0)* |
+| `/pending?peer=X` | GET | Peer polls for its next task (atomic claim) *(v0.27.0)* |
+| `/pending/result` | POST | Peer posts task result back `{taskId, result}` *(v0.27.0)* |
 
 ```bash
 # Check health
@@ -434,6 +441,53 @@ java --enable-native-access=ALL-UNNAMED -jar ~/.kcp/kcp-memory-daemon.jar search
 
 ---
 
+## ExoCortex: peer task dispatch (v0.27.0)
+
+kcp-memory supports a multi-node ExoCortex topology where a hub node (e.g. Mimir on EC2) brokers tasks between peer nodes (e.g. Neuron, Klaw, laptop). Each peer runs a `kcp-memory daemon --peer ssh://...` that stays connected to the hub via SSH tunnel.
+
+### Queuing a task for a remote node
+
+```bash
+# From anywhere with HTTP access to the hub
+curl -X POST http://hub:7735/dispatch/queue \
+  -H 'Content-Type: application/json' \
+  -d '{"peerId": "ip-172-31-1-116.eu-north-1.compute.internal", "prompt": "run the nightly scan"}'
+# → {"taskId": "uuid", "peerId": "...", "status": "queued"}
+```
+
+The peer polls for tasks every 30 seconds, claims one atomically, executes it via `claude -p "<prompt>" --output-format text`, and posts the result back.
+
+### Checking task status and result
+
+```bash
+curl "http://hub:7735/dispatch/queue?peer=<peerId>&limit=10"
+# Returns: [{taskId, prompt, status, createdAt, claimedAt, completedAt, result, error}]
+```
+
+Status values: `queued` → `claimed` → `done` (or `error`).
+
+### Node discovery
+
+```bash
+curl http://hub:7735/nodes
+# Returns all connected peers with displayName, lastSeen, sessionCount
+```
+
+### Systemd setup for a peer node
+
+```ini
+[Service]
+Environment="ANTHROPIC_API_KEY=sk-ant-..."
+Environment="PATH=/home/ec2-user/.nvm/versions/node/v24/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/java -jar %h/.kcp/kcp-memory-daemon.jar daemon \
+  --peer ssh://ec2-user@hub.internal \
+  --name Neuron
+```
+
+The `PATH` environment entry is required so the daemon can locate the `claude` binary when executing dispatched tasks.
+
+---
+
 ## Releases
 
 | Version | Notes |
@@ -452,6 +506,8 @@ java --enable-native-access=ALL-UNNAMED -jar ~/.kcp/kcp-memory-daemon.jar search
 | v0.21.0 | **FTS session fix.** `SessionParser` accepted only `"human"` type for user messages, but Claude Code sends `"user"`. All 3,742 sessions had NULL `first_message` — FTS returned 0 results. Fixed with regression test. **After upgrading, run `kcp-memory scan --force`** to repopulate session data. |
 | v0.22.0 | **Documentation and version alignment.** Updated README: 10 MCP tools (was 9), CLI alias note (`--enable-native-access`), FTS fix upgrade instructions. Coordinated release with kcp-commands v0.22.0 and kcp-dashboard v0.22.0. |
 | v0.26.0 | **Ecosystem alignment.** Removed stale v0.20.0 upgrade note from Quick Start. Coordinated release with kcp-commands v0.26.0 and kcp-dashboard v0.26.0. |
+| v0.26.1 | **Windows MSIX sandbox fix.** Replaced `HttpServer` with `ServerSocket`-based `TcpHttpServer` to resolve startup failures in the Windows MSIX package. |
+| v0.27.0 | **ExoCortex control plane.** Peer sync (`--peer ssh://...`), external API (`--serve`, `--api-key`), WebSocket node broadcast, `/files` browser, `/process` control, live session file watcher, `/nodes/register`, `/sessions/<id>` transcript endpoint, and **peer task dispatch** (`POST /dispatch/queue`, `GET /pending`, `POST /pending/result`). Remote `claude` nodes can now receive and execute tasks queued from anywhere in the ExoCortex fleet. |
 
 ---
 

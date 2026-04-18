@@ -62,17 +62,55 @@ mobile-specific endpoints:
 | `/sessions` | GET | List recent sessions (all nodes via peer sync) |
 | `/events/search?q=` | GET | Tool event search |
 | `/stats` | GET | Aggregate statistics |
+| `/sessions/{id}/content` | GET | Full session transcript as parsed messages |
 | `/dispatch` | POST | Send task to Claude Code, stream results |
 | `/capture` | POST | Ingest voice/photo/note from mobile |
 | `/synthesis/search?q=` | GET | Proxy query to local Synthesis |
+| `/ws` | WebSocket | Live session_message + tool event broadcast |
 
 All requests require `Authorization: Bearer <api-key>`.
 
 Relevant files:
 - `server/ExternalHttpServer.java` — TLS + API key auth server
+- `server/EventBroadcaster.java` — WebSocket fan-out (tool events + session messages)
+- `server/WsHandler.java` — WebSocket upgrade handler on `/ws`
+- `scanner/SessionFileWatcher.java` — watches `~/.claude/projects/**/*.jsonl`, broadcasts new messages
+- `handler/SessionContentHandler.java` — reads JSONL transcript, parses user/assistant turns
 - `handler/DispatchHandler.java` — Claude Code task dispatch
 - `handler/CaptureHandler.java` — Mobile knowledge capture ingest
 - `handler/SynthesisProxyHandler.java` — Synthesis search proxy
+
+### WebSocket event types
+
+The `/ws` endpoint broadcasts two event shapes:
+
+**Tool event** (from kcp hook / event log):
+```json
+{"type":"tool_event","tool":"Bash","command":"...","peerId":"...","sessionId":"...","timestamp":"..."}
+```
+
+**Session message** (from SessionFileWatcher watching JSONL files):
+```json
+{"type":"session_message","sessionId":"...","role":"user|assistant","text":"...","timestamp":"...","uuid":"..."}
+```
+
+Android's `ExoCortexService` consumes tool events. `SessionDetailViewModel.watchLive()` consumes session messages filtered by sessionId.
+
+### Session content endpoint
+
+`GET /sessions/{sessionId}/content` reads the JSONL transcript:
+```json
+{
+  "sessionId": "abc123",
+  "slug": "-home-totto-src-myproject",
+  "messageCount": 47,
+  "messages": [
+    {"role": "user", "text": "...", "timestamp": "...", "uuid": "..."},
+    {"role": "assistant", "text": "...", "timestamp": "...", "uuid": "..."}
+  ]
+}
+```
+Parses `message.content` as either a plain String or an array of `{type:"text", text:"..."}` blocks.
 
 ## Implementation Guide
 

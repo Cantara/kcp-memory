@@ -37,18 +37,21 @@ public class EventsHandler extends BaseHandler {
 
         String query = ex.getRequestURI().getQuery();
         String q     = param(query, "q");
+        String since = param(query, "since");
         int    limit = intParam(query, "limit", 20);
-
-        if (q == null || q.isBlank()) {
-            sendJson(ex, 200, Collections.emptyList());
-            return;
-        }
 
         // Run a quick incremental scan so freshly-written events are visible
         new EventLogScanner(db).scan();
 
         try {
-            List<ToolEvent> results = new EventStore(db).search(q, limit);
+            EventStore store = new EventStore(db);
+            List<ToolEvent> results;
+            if (q == null || q.isBlank()) {
+                // No search query — return recent events by timestamp (used by peer sync)
+                results = store.listSince(since, limit);
+            } else {
+                results = store.search(q, limit);
+            }
             sendJson(ex, 200, results);
         } catch (SQLException e) {
             sendError(ex, 500, "Search failed: " + e.getMessage());
