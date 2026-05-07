@@ -1,4 +1,31 @@
-kcp_version: "0.12"
+version: "0.14"
+
+entity:
+  name: kcp-memory
+  type: episodic-memory-hub
+  description: >
+    Episodic memory for Claude Code. Indexes ~/.claude/projects/**/*.jsonl
+    session transcripts, subagent transcripts, and ~/.kcp/events.jsonl tool-call
+    events into a local SQLite+FTS5 database. Available as a CLI, HTTP daemon
+    (port 7735), and MCP server (8 tools). Solves the blank-slate problem.
+
+authority:
+  owner: Cantara — Norwegian Software Development Foundation
+  repo: https://github.com/Cantara/kcp-memory
+  license: Apache-2.0
+
+discovery:
+  provenance: canonical
+  confidence: high
+  staleness_days: 14
+
+signing:
+  scheme: ed25519
+  scope: this-manifest
+  public_key: https://wiki.cantara.no/.well-known/kcp-signing-key.pub
+  signature: https://raw.githubusercontent.com/Cantara/kcp-memory/main/knowledge.yaml.sig
+
+kcp_version: "0.14"
 project: kcp-memory
 version: 0.5.0
 updated: "2026-03-19"
@@ -14,6 +41,30 @@ units:
     scope: global
     audience: [human, agent, developer]
     validated: "2026-03-04"
-    triggers: [install, overview, episodic memory, session history, mcp tools, sqlite, fts5, three-layer memory, project context, session detail, events search, kcp_memory_project_context, kcp_memory_search, subagent, agent session, session tree, kcp_memory_subagent_search, kcp_memory_session_tree]
+    triggers: [install, overview, episodic memory, session history, mcp tools, sqlite, fts5, three-layer memory, project context, session detail, events search, kcp_memory_project_context, kcp_memory_search, subagent, agent session, session tree, kcp_memory_subagent_search, kcp_memory_session_tree, blank-slate, daemon, port 7735]
 
-relationships: []
+  - id: mcp-tools
+    path: README.md
+    intent: "What are the 8 MCP tools exposed by kcp-memory and what does each do?"
+    scope: module
+    audience: [agent, developer]
+    validated: "2026-03-04"
+    depends_on: [readme]
+    triggers: [mcp tools, kcp_memory_search, kcp_memory_events_search, kcp_memory_list, kcp_memory_stats, kcp_memory_session_detail, kcp_memory_project_context, kcp_memory_subagent_search, kcp_memory_session_tree, 8 tools]
+
+  - id: three-layer-model
+    path: README.md
+    intent: "How does the three-layer memory model (procedural/episodic/semantic) work in kcp-memory?"
+    scope: module
+    audience: [agent, architect]
+    validated: "2026-03-04"
+    depends_on: [readme]
+    triggers: [three-layer, procedural memory, episodic memory, semantic memory, memory architecture, layer model]
+
+relationships:
+  - from: readme
+    to: mcp-tools
+    type: enables
+  - from: readme
+    to: three-layer-model
+    type: enables
