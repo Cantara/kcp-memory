@@ -1,44 +1,43 @@
 # kcp-memory
 
-> Episodic memory for Claude Code. Indexes ~/.claude/projects/**/*.jsonl session transcripts,
-> subagent transcripts (subagents/agent-*.jsonl), and ~/.kcp/events.jsonl tool-call events
-> (from kcp-commands v0.9.0) into a local SQLite+FTS5 database. Available as a CLI, HTTP
-> daemon (port 7735), and MCP server (8 tools).
+> Episodic memory for Claude Code. Indexes session transcripts, subagent
+> transcripts, and tool-call events into SQLite+FTS5. Solves the blank-slate
+> problem: every session starts knowing what you were doing.
 
-Solves the blank-slate problem: every Claude Code session starts with no memory of prior work.
-`kcp_memory_project_context` at session start gives Claude the last 5 sessions + 20 tool events
-for the current project — no query needed.
+Available as CLI, HTTP daemon (port 7735), and MCP server (8 tools).
+`kcp_memory_project_context` at session start auto-loads last 5 sessions + 20
+tool events for the current project — no query needed.
 
 Part of the [KCP ecosystem](https://github.com/Cantara/knowledge-context-protocol).
+Apache-2.0. Java 21+.
 
-## Key files
+## Structured Navigation (for AI agents)
 
-- [README.md](README.md): Full documentation — install, CLI, HTTP API, MCP tools, three-layer model
+This repository ships a KCP v0.14 manifest:
+https://raw.githubusercontent.com/Cantara/kcp-memory/main/knowledge.yaml
 
-## Machine-readable manifest
+Signing key (delegated to Cantara org): https://wiki.cantara.no/.well-known/kcp-signing-key.pub
 
-[knowledge.yaml](knowledge.yaml)
+## MCP tools
 
-## Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Cantara/kcp-memory/main/bin/install.sh | bash
-alias kcp-memory='java -jar ~/.kcp/kcp-memory-daemon.jar'
-```
-
-## MCP tools (v0.5.0)
-
+- `kcp_memory_project_context` — proactive context from PWD (no query needed)
 - `kcp_memory_search` — FTS5 search over session transcripts
 - `kcp_memory_events_search` — FTS5 search over tool-call events
 - `kcp_memory_list` — recent sessions, optionally filtered by project
 - `kcp_memory_stats` — total sessions, turns, tool calls, top tools
 - `kcp_memory_session_detail` — full content of a specific session
-- `kcp_memory_project_context` — proactive context from PWD (no query needed)
-- `kcp_memory_subagent_search` — FTS5 search within subagent transcripts (reasoning trails, discoveries, dead ends)
-- `kcp_memory_session_tree` — parent session + all child agents as a tree (delegated scope at a glance)
+- `kcp_memory_subagent_search` — search within subagent transcripts
+- `kcp_memory_session_tree` — parent session + all child agents as a tree
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Cantara/kcp-memory/main/bin/install.sh | bash
+```
 
 ## Related
 
-- [kcp-commands](https://github.com/Cantara/kcp-commands) — writes ~/.kcp/events.jsonl (Phase C); saves 33% context window
-- [Knowledge Context Protocol](https://github.com/Cantara/knowledge-context-protocol) — the KCP spec
+- [kcp-commands](https://github.com/Cantara/kcp-commands) — writes ~/.kcp/events.jsonl; saves 33% context window
+- [kcp-dashboard](https://github.com/Cantara/kcp-dashboard) — terminal UI showing session stats
+- [knowledge-context-protocol](https://github.com/Cantara/knowledge-context-protocol) — KCP spec
 - [Release post](https://wiki.totto.org/blog/2026/03/03/kcp-memory/) — design rationale and architecture
