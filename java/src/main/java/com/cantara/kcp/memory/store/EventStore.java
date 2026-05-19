@@ -51,7 +51,7 @@ public class EventStore {
                 """;
         List<ToolEvent> results = new ArrayList<>();
         try (PreparedStatement ps = db.getConnection().prepareStatement(sql)) {
-            ps.setString(1, query);
+            ps.setString(1, toFtsQuery(query));
             ps.setInt(2, limit);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) results.add(mapRow(rs));
@@ -125,6 +125,23 @@ public class EventStore {
             ps.setString(3, command);
             ps.executeUpdate();
         }
+    }
+
+    /**
+     * Quote each token so user input is treated as literal text by FTS5.
+     * Prevents characters like '-' from being interpreted as column operators.
+     */
+    private String toFtsQuery(String query) {
+        if (query == null || query.isBlank()) return "\"\"";
+        StringBuilder out = new StringBuilder();
+        for (String token : query.trim().split("\\s+")) {
+            if (token.isBlank()) continue;
+            if (!out.isEmpty()) out.append(' ');
+            out.append('"')
+               .append(token.replace("\"", "\"\""))
+               .append('"');
+        }
+        return out.isEmpty() ? "\"\"" : out.toString();
     }
 
     private ToolEvent mapRow(ResultSet rs) throws SQLException {

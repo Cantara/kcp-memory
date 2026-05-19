@@ -104,6 +104,34 @@ class SessionStoreTest {
     }
 
     @Test
+    void getByIdOrPrefixReturnsExactMatch() throws SQLException {
+        store.upsert(makeSession("abcdef01-1234-5678-9abc-def012345678", "/src/p", "Exact match"));
+        Session s = store.getByIdOrPrefix("abcdef01-1234-5678-9abc-def012345678");
+        assertNotNull(s);
+        assertEquals("abcdef01-1234-5678-9abc-def012345678", s.getSessionId());
+    }
+
+    @Test
+    void getByIdOrPrefixResolvesEightCharPrefix() throws SQLException {
+        store.upsert(makeSession("abcdef01-1234-5678-9abc-def012345678", "/src/p", "Prefix match"));
+        Session s = store.getByIdOrPrefix("abcdef01");
+        assertNotNull(s);
+        assertEquals("abcdef01-1234-5678-9abc-def012345678", s.getSessionId());
+    }
+
+    @Test
+    void getByIdOrPrefixReturnsNullForAmbiguousPrefix() throws SQLException {
+        store.upsert(makeSession("abcdef01-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "/src/a", "First"));
+        store.upsert(makeSession("abcdef01-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "/src/b", "Second"));
+        assertNull(store.getByIdOrPrefix("abcdef01"));
+    }
+
+    @Test
+    void getByIdOrPrefixReturnsNullForUnknownId() throws SQLException {
+        assertNull(store.getByIdOrPrefix("nonexistent"));
+    }
+
+    @Test
     void statsAggregatesCorrectly() throws SQLException {
         Session s1 = makeSession("sess-008", "/src/x", "Task one");
         s1.setTurnCount(5);
