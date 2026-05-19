@@ -364,7 +364,7 @@ public class McpServer {
         String sessionId = args.path("session_id").asText("").strip();
         if (sessionId.isEmpty()) return "Error: session_id is required";
 
-        Session s = new SessionStore(db).getById(sessionId);
+        Session s = new SessionStore(db).getByIdOrPrefix(sessionId);
         UsageLogger.logGet(sessionId);
         if (s == null) return "Session not found: " + sessionId;
 
@@ -471,8 +471,9 @@ public class McpServer {
         // Refresh agent index
         new AgentSessionScanner(db).scan(false);
 
-        Session            parent = new SessionStore(db).getById(sessionId);
-        List<AgentSession> agents = new AgentSessionStore(db).listByParent(sessionId, 100);
+        Session            parent     = new SessionStore(db).getByIdOrPrefix(sessionId);
+        String             resolvedId = parent != null ? parent.getSessionId() : sessionId;
+        List<AgentSession> agents = new AgentSessionStore(db).listByParent(resolvedId, 100);
 
         StringBuilder sb = new StringBuilder();
 
