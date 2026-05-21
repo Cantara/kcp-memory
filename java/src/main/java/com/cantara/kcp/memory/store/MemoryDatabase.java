@@ -75,7 +75,8 @@ public class MemoryDatabase implements AutoCloseable {
                 "/db/V4__output_preview.sql",
                 "/db/V5__manifest_version.sql",
                 "/db/V6__peer_sync.sql",
-                "/db/V7__pending_tasks.sql"}) {
+                "/db/V7__pending_tasks.sql",
+                "/db/V8__decisions.sql"}) {
 
             String version = resource.substring(resource.lastIndexOf('/') + 1, resource.lastIndexOf('.'));
 

@@ -64,6 +64,24 @@ public final class UsageLogger {
         });
     }
 
+    /** Log a decision query event asynchronously — returns immediately. */
+    public static void logDecisionQuery(String query, String type, String domain, int resultCount) {
+        Thread.ofVirtual().start(() -> {
+            try {
+                ensureSchema();
+                String project = projectFromPwd();
+                // Store type/domain in query field as structured: "query=X type=Y domain=Z"
+                String fullQuery = String.format("query=%s type=%s domain=%s",
+                        query != null ? query : "",
+                        type != null ? type : "",
+                        domain != null ? domain : "");
+                insert("decision_query", project, fullQuery, null, resultCount, null, null, null);
+            } catch (Exception e) {
+                System.err.println("[kcp-memory UsageLogger] decision query failed: " + e);
+            }
+        });
+    }
+
     private static String projectFromPwd() {
         String pwd = System.getenv("PWD");
         if (pwd == null || pwd.isBlank()) return "unknown";
