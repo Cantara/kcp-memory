@@ -1,4 +1,4 @@
-version: "0.14"
+version: "0.21"
 
 entity:
   name: kcp-memory
@@ -22,16 +22,19 @@ discovery:
 signing:
   scheme: ed25519
   scope: this-manifest
-  public_key: https://wiki.cantara.no/.well-known/kcp-signing-key.pub
-  signature: https://raw.githubusercontent.com/Cantara/kcp-memory/main/knowledge.yaml.sig
+  public_key: "MCowBQYDK2VwAyEAuipgusnqU9vjf3p2yPVLD/DmERT6tBbLOqEETdxAhMU="
+  signature: "https://raw.githubusercontent.com/Cantara/kcp-memory/main/knowledge.yaml.sig"
 
-kcp_version: "0.14"
+kcp_version: "0.21"
 project: kcp-memory
 version: 0.5.0
-updated: "2026-03-19"
+updated: "2026-06-20"
+temporal:
+  valid_from: "2026-06-12"
 language: en
 license: "Apache-2.0"
 indexing: open
+not_for: []
 
 units:
 
@@ -42,6 +45,9 @@ units:
     audience: [human, agent, developer]
     validated: "2026-03-04"
     triggers: [install, overview, episodic memory, session history, mcp tools, sqlite, fts5, three-layer memory, project context, session detail, events search, kcp_memory_project_context, kcp_memory_search, subagent, agent session, session tree, kcp_memory_subagent_search, kcp_memory_session_tree, blank-slate, daemon, port 7735]
+      content_hash:
+        algorithm: sha256
+        value: ""
 
   - id: mcp-tools
     path: README.md
@@ -51,6 +57,9 @@ units:
     validated: "2026-03-04"
     depends_on: [readme]
     triggers: [mcp tools, kcp_memory_search, kcp_memory_events_search, kcp_memory_list, kcp_memory_stats, kcp_memory_session_detail, kcp_memory_project_context, kcp_memory_subagent_search, kcp_memory_session_tree, 8 tools]
+      content_hash:
+        algorithm: sha256
+        value: ""
 
   - id: three-layer-model
     path: README.md
@@ -60,6 +69,9 @@ units:
     validated: "2026-03-04"
     depends_on: [readme]
     triggers: [three-layer, procedural memory, episodic memory, semantic memory, memory architecture, layer model]
+      content_hash:
+        algorithm: sha256
+        value: ""
 
 manifests:
   - url: https://cantara.github.io/knowledge-context-protocol/knowledge.yaml
