@@ -23,7 +23,8 @@ signing:
   scheme: ed25519
   scope: this-manifest
   public_key: "MCowBQYDK2VwAyEAuipgusnqU9vjf3p2yPVLD/DmERT6tBbLOqEETdxAhMU="
-  signature: "https://raw.githubusercontent.com/Cantara/kcp-memory/main/knowledge.yaml.sig"
+  signature: "https://raw.githubusercontent.com/Cantara/kcp-memory/main/knowledge\
+    .yaml.sig"
 
 kcp_version: "0.21"
 project: kcp-memory
@@ -40,38 +41,83 @@ units:
 
   - id: readme
     path: README.md
-    intent: "What is kcp-memory, how do I install it, and how do I use the CLI, HTTP API, and MCP server to query Claude Code session history?"
+    intent: "What is kcp-memory, how do I install it, and how do I use the CLI, HTTP
+      API, and MCP server to query Claude Code session history?"
     scope: global
-    audience: [human, agent, developer]
+    audience: [ human, agent, developer ]
     validated: "2026-03-04"
-    triggers: [install, overview, episodic memory, session history, mcp tools, sqlite, fts5, three-layer memory, project context, session detail, events search, kcp_memory_project_context, kcp_memory_search, subagent, agent session, session tree, kcp_memory_subagent_search, kcp_memory_session_tree, blank-slate, daemon, port 7735]
+    triggers:
+      [
+        install,
+        overview,
+        episodic memory,
+        session history,
+        mcp tools,
+        sqlite,
+        fts5,
+        three-layer memory,
+        project context,
+        session detail,
+        events search,
+        kcp_memory_project_context,
+        kcp_memory_search,
+        subagent,
+        agent session,
+        session tree,
+        kcp_memory_subagent_search,
+        kcp_memory_session_tree,
+        blank-slate,
+        daemon,
+        port 7735
+      ]
     content_hash:
       algorithm: sha256
-      value: ""
+      value: "0309a52c8c749a18a3248afb5d6bb7a6a87fa8ccf4b629b1a69c8cead2113d6a"
 
   - id: mcp-tools
     path: README.md
     intent: "What are the 8 MCP tools exposed by kcp-memory and what does each do?"
     scope: module
-    audience: [agent, developer]
+    audience: [ agent, developer ]
     validated: "2026-03-04"
-    depends_on: [readme]
-    triggers: [mcp tools, kcp_memory_search, kcp_memory_events_search, kcp_memory_list, kcp_memory_stats, kcp_memory_session_detail, kcp_memory_project_context, kcp_memory_subagent_search, kcp_memory_session_tree, 8 tools]
+    depends_on: [ readme ]
+    triggers:
+      [
+        mcp tools,
+        kcp_memory_search,
+        kcp_memory_events_search,
+        kcp_memory_list,
+        kcp_memory_stats,
+        kcp_memory_session_detail,
+        kcp_memory_project_context,
+        kcp_memory_subagent_search,
+        kcp_memory_session_tree,
+        8 tools
+      ]
     content_hash:
       algorithm: sha256
-      value: ""
+      value: "0309a52c8c749a18a3248afb5d6bb7a6a87fa8ccf4b629b1a69c8cead2113d6a"
 
   - id: three-layer-model
     path: README.md
-    intent: "How does the three-layer memory model (procedural/episodic/semantic) work in kcp-memory?"
+    intent: "How does the three-layer memory model (procedural/episodic/semantic)
+      work in kcp-memory?"
     scope: module
-    audience: [agent, architect]
+    audience: [ agent, architect ]
     validated: "2026-03-04"
-    depends_on: [readme]
-    triggers: [three-layer, procedural memory, episodic memory, semantic memory, memory architecture, layer model]
+    depends_on: [ readme ]
+    triggers:
+      [
+        three-layer,
+        procedural memory,
+        episodic memory,
+        semantic memory,
+        memory architecture,
+        layer model
+      ]
     content_hash:
       algorithm: sha256
-      value: ""
+      value: "0309a52c8c749a18a3248afb5d6bb7a6a87fa8ccf4b629b1a69c8cead2113d6a"
 
 manifests:
   - url: https://cantara.github.io/knowledge-context-protocol/knowledge.yaml
