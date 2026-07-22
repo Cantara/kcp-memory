@@ -16,13 +16,13 @@ Three-layer memory model:
 - **Episodic memory:** Past session history (provided by kcp-memory)
 - **Semantic memory:** Codebase knowledge (provided by Synthesis)
 
-Daemon runs on port 7735, scans `~/.claude/projects/` for session transcripts, indexes them into SQLite with FTS5. Provides 6 MCP tools for inline session querying.
+Daemon runs on port 7735, scans `~/.claude/projects/` for session transcripts, indexes them into SQLite with FTS5. Provides 11 MCP tools for inline session querying.
 
 ## Key Entry Points
 - `bin/install.sh` - Installation script
 - `java/` - Java source code
 - CLI: `kcp-memory search`, `kcp-memory scan`, `kcp-memory stats`
-- MCP tools: `kcp_memory_search`, `kcp_memory_events_search`, `kcp_memory_list`, `kcp_memory_stats`, `kcp_memory_session_detail`, `kcp_memory_project_context`
+- MCP tools: `kcp_memory_search`, `kcp_memory_events_search`, `kcp_memory_list`, `kcp_memory_stats`, `kcp_memory_session_detail`, `kcp_memory_project_context`, `kcp_memory_subagent_search`, `kcp_memory_session_tree`, `kcp_memory_analyze`, `kcp_memory_forget`, `kcp_memory_retention`
 - `knowledge.yaml` - KCP manifest
 
 ## Development

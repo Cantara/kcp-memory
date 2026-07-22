@@ -4,7 +4,7 @@
 > transcripts, and tool-call events into SQLite+FTS5. Solves the blank-slate
 > problem: every session starts knowing what you were doing.
 
-Available as CLI, HTTP daemon (port 7735), and MCP server (8 tools).
+Available as CLI, HTTP daemon (port 7735), and MCP server (11 tools).
 `kcp_memory_project_context` at session start auto-loads last 5 sessions + 20
 tool events for the current project — no query needed.
 
@@ -28,6 +28,9 @@ Signing key (delegated to Cantara org): https://wiki.cantara.no/.well-known/kcp-
 - `kcp_memory_session_detail` — full content of a specific session
 - `kcp_memory_subagent_search` — search within subagent transcripts
 - `kcp_memory_session_tree` — parent session + all child agents as a tree
+- `kcp_memory_analyze` — manifest quality metrics (retry/help-followup/error rate)
+- `kcp_memory_forget` — right-to-forget: tombstone a session out of recall
+- `kcp_memory_retention` — declare or clear a session's retention window
 
 ## Install
 
