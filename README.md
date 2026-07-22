@@ -1,5 +1,8 @@
 # kcp-memory
 
+### 🧾 See it run — [interactive KCP playground](https://cantara.github.io/pi-kcp/playground/) · [read the reveal](https://wiki.totto.org/blog/2026/07/22/the-ai-agent-that-keeps-the-receipts/)
+
+
 **Episodic memory for Claude Code, Gemini CLI, and Codex CLI.** Indexes your session transcripts and tool-call events into a local SQLite database — searchable in milliseconds. Available as a CLI, an HTTP API, and an MCP server so Claude can query its own history inline.
 
 ```bash
