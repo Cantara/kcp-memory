@@ -55,6 +55,8 @@ import java.util.logging.Logger;
  *   <li>kcp_memory_subagent_search — FTS5 search within subagent transcripts (v0.5.0)</li>
  *   <li>kcp_memory_session_tree    — parent session + all child agents as a tree (v0.5.0)</li>
  *   <li>kcp_memory_analyze        — manifest quality metrics: retry/help/error rates per manifest key (v0.16.0)</li>
+ *   <li>kcp_memory_forget         — right-to-forget: tombstone a memory so recall never surfaces it (v0.33.0)</li>
+ *   <li>kcp_memory_retention      — declare/clear a retention window (valid_until) on a memory (v0.33.0)</li>
  * </ul>
  */
 public class McpServer {
@@ -233,6 +235,27 @@ public class McpServer {
                         .optional("by_version",  "boolean", "Group by manifest content hash to compare before/after improvements")
         ));
 
+        tools.add(tool(
+                "kcp_memory_forget",
+                "Right-to-forget: permanently tombstone a memory (session) so it is never surfaced " +
+                "by search or list again. The row is retained for audit but excluded from all recall. " +
+                "Use when a session must be governed out of memory — e.g. it contains a secret, was " +
+                "mistaken, or the user asked to forget it. Added in v0.33.0.",
+                schema()
+                        .required("session_id", "string", "Session ID from a kcp_memory_search or kcp_memory_list result")
+                        .optional("reason",     "string", "Audit reason recorded with the forget")
+        ));
+
+        tools.add(tool(
+                "kcp_memory_retention",
+                "Declare (or clear) a retention window on a memory (session). After valid_until passes, " +
+                "the memory is expired and recall skips it. Pass an empty valid_until to clear any expiry. " +
+                "Added in v0.33.0.",
+                schema()
+                        .required("session_id",  "string", "Session ID to govern")
+                        .optional("valid_until", "string", "ISO-8601 UTC expiry (e.g. 2026-12-31T00:00:00Z); empty clears it")
+        ));
+
         return result;
     }
 
@@ -265,6 +288,8 @@ public class McpServer {
                 case "kcp_memory_subagent_search" -> toolSubagentSearch(args);
                 case "kcp_memory_session_tree"    -> toolSessionTree(args);
                 case "kcp_memory_analyze"         -> toolAnalyze(args);
+                case "kcp_memory_forget"          -> toolForget(args);
+                case "kcp_memory_retention"       -> toolRetention(args);
                 default                            -> "Unknown tool: " + name;
             };
         } catch (Exception e) {
@@ -358,6 +383,38 @@ public class McpServer {
             topTools.forEach(t -> sb.append(String.format("  %-25s %,d%n", t.toolName(), t.count())));
         }
         return sb.toString();
+    }
+
+    private String toolForget(JsonNode args) throws Exception {
+        String sessionId = args.path("session_id").asText("").strip();
+        if (sessionId.isEmpty()) return "Error: session_id is required";
+        String reason = args.path("reason").asText("").strip();
+
+        SessionStore store = new SessionStore(db);
+        Session s = store.getByIdOrPrefix(sessionId);
+        if (s == null) return "Session not found: " + sessionId;
+
+        boolean ok = store.forget(s.getSessionId(), reason.isEmpty() ? null : reason);
+        if (!ok) return "Session not found: " + sessionId;
+        return "Forgotten: " + s.getSessionId()
+                + " — will no longer be surfaced by recall."
+                + (reason.isEmpty() ? "" : " Reason: " + reason);
+    }
+
+    private String toolRetention(JsonNode args) throws Exception {
+        String sessionId = args.path("session_id").asText("").strip();
+        if (sessionId.isEmpty()) return "Error: session_id is required";
+        String validUntil = args.path("valid_until").asText("").strip();
+
+        SessionStore store = new SessionStore(db);
+        Session s = store.getByIdOrPrefix(sessionId);
+        if (s == null) return "Session not found: " + sessionId;
+
+        boolean ok = store.setRetention(s.getSessionId(), validUntil.isEmpty() ? null : validUntil);
+        if (!ok) return "Session not found: " + sessionId;
+        return validUntil.isEmpty()
+                ? "Retention cleared for " + s.getSessionId() + " — memory no longer expires."
+                : "Retention set for " + s.getSessionId() + " — expires " + validUntil + ".";
     }
 
     private String toolSessionDetail(JsonNode args) throws Exception {
@@ -608,6 +665,9 @@ public class McpServer {
             if (msg.length() > 120) msg = msg.substring(0, 120) + "…";
             sb.append("\"").append(msg).append("\"\n");
         }
+        if (r.getProvenance() != null) sb.append("provenance: ").append(r.getProvenance());
+        if (r.getValidUntil() != null) sb.append("  (valid until ").append(r.getValidUntil()).append(")");
+        if (r.getProvenance() != null || r.getValidUntil() != null) sb.append("\n");
         sb.append("\n");
         return sb.toString();
     }

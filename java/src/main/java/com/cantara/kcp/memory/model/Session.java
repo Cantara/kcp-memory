@@ -21,6 +21,7 @@ public class Session {
     private String firstMessage;
     private String allUserText;
     private String scannedAt;
+    private String provenance;   // governance: origin descriptor; auto-derived if null
 
     public Session() {}
 
@@ -65,4 +66,7 @@ public class Session {
 
     public String getScannedAt()             { return scannedAt; }
     public void setScannedAt(String v)       { this.scannedAt = v; }
+
+    public String getProvenance()            { return provenance; }
+    public void setProvenance(String v)      { this.provenance = v; }
 }

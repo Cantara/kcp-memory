@@ -24,12 +24,18 @@ public class SessionStore {
 
     /** Insert or update a session (upsert by session_id). */
     public void upsert(Session s) throws SQLException {
+        // Every memory carries provenance. Derive one from the session's own
+        // origin when the caller supplies none; on conflict we keep any
+        // provenance already recorded so re-scans never clobber it.
+        String provenance = s.getProvenance() != null && !s.getProvenance().isBlank()
+                ? s.getProvenance() : deriveProvenance(s);
         String sql = """
                 INSERT INTO sessions
                   (session_id, project_dir, git_branch, slug, model,
                    started_at, ended_at, turn_count, tool_call_count,
-                   tool_names, files_json, first_message, all_user_text, scanned_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   tool_names, files_json, first_message, all_user_text, scanned_at,
+                   provenance)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(session_id) DO UPDATE SET
                   project_dir     = excluded.project_dir,
                   git_branch      = excluded.git_branch,
@@ -43,7 +49,8 @@ public class SessionStore {
                   files_json      = excluded.files_json,
                   first_message   = excluded.first_message,
                   all_user_text   = excluded.all_user_text,
-                  scanned_at      = excluded.scanned_at
+                  scanned_at      = excluded.scanned_at,
+                  provenance      = COALESCE(sessions.provenance, excluded.provenance)
                 """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1,  s.getSessionId());
@@ -60,8 +67,17 @@ public class SessionStore {
             ps.setString(12, s.getFirstMessage());
             ps.setString(13, s.getAllUserText());
             ps.setString(14, s.getScannedAt());
+            ps.setString(15, provenance);
             ps.executeUpdate();
         }
+    }
+
+    /** Derive a provenance descriptor from a session's own origin. */
+    private static String deriveProvenance(Session s) {
+        String origin = s.getSlug() != null && !s.getSlug().isBlank()
+                ? s.getSlug()
+                : (s.getProjectDir() != null ? s.getProjectDir() : "");
+        return "claude-code:" + origin + "#" + s.getSessionId();
     }
 
     /** Return full session detail by session_id, or null if not found. */
@@ -157,40 +173,65 @@ public class SessionStore {
         }
     }
 
-    /** Full-text search using FTS5. Returns up to limit results. */
+    // ------------------------------------------------------------------
+    // Governance recall gate
+    // ------------------------------------------------------------------
+    // SQL predicate that skips memories which have been forgotten (tombstoned)
+    // or whose retention window has expired. ISO-8601 UTC strings compare
+    // lexicographically, so valid_until > now is a correct temporal test.
+    // The ?-parameter is bound to the current instant. Mirrors GovernanceGate.
+    private static final String RECALL_GATE =
+            " s.forgotten_at IS NULL AND (s.valid_until IS NULL OR s.valid_until > ?) ";
+
+    /**
+     * Full-text search using FTS5, gated by memory governance. Expired or
+     * forgotten memories are skipped and never surfaced. Returns up to limit
+     * live results, each carrying its provenance.
+     */
     public List<SearchResult> search(String query, int limit) throws SQLException {
         String sql = """
                 SELECT s.session_id, s.project_dir, s.git_branch, s.slug, s.model,
                        s.started_at, s.ended_at, s.turn_count, s.tool_call_count,
-                       s.first_message, rank
+                       s.first_message, s.provenance, s.valid_until, rank
                 FROM sessions_fts
                 JOIN sessions s ON sessions_fts.session_id = s.session_id
-                WHERE sessions_fts MATCH ?
+                WHERE sessions_fts MATCH ? AND
+                """ + RECALL_GATE + """
                 ORDER BY rank
                 LIMIT ?
                 """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, toFtsQuery(query));
-            ps.setInt(2, limit);
+            ps.setString(2, nowIso());
+            ps.setInt(3, limit);
             return mapResults(ps.executeQuery());
         }
     }
 
-    /** List sessions, optionally filtered by project dir. Most recent first. */
+    /**
+     * List sessions, optionally filtered by project dir. Most recent first.
+     * Gated by memory governance — expired or forgotten memories are skipped.
+     */
     public List<SearchResult> list(String projectDir, int limit) throws SQLException {
         boolean filtered = projectDir != null && !projectDir.isBlank();
+        String cols = "session_id, project_dir, git_branch, slug, model, started_at, ended_at, "
+                + "turn_count, tool_call_count, first_message, provenance, valid_until";
         String sql = filtered
-                ? "SELECT session_id, project_dir, git_branch, slug, model, started_at, ended_at, turn_count, tool_call_count, first_message FROM sessions WHERE project_dir = ? ORDER BY started_at DESC LIMIT ?"
-                : "SELECT session_id, project_dir, git_branch, slug, model, started_at, ended_at, turn_count, tool_call_count, first_message FROM sessions ORDER BY started_at DESC LIMIT ?";
+                ? "SELECT " + cols + " FROM sessions s WHERE project_dir = ? AND" + RECALL_GATE
+                  + "ORDER BY started_at DESC LIMIT ?"
+                : "SELECT " + cols + " FROM sessions s WHERE" + RECALL_GATE
+                  + "ORDER BY started_at DESC LIMIT ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            if (filtered) {
-                ps.setString(1, projectDir);
-                ps.setInt(2, limit);
-            } else {
-                ps.setInt(1, limit);
-            }
+            int i = 1;
+            if (filtered) ps.setString(i++, projectDir);
+            ps.setString(i++, nowIso());
+            ps.setInt(i, limit);
             return mapResults(ps.executeQuery());
         }
+    }
+
+    private static String nowIso() {
+        return java.time.Instant.now().toString();
     }
 
     /** Aggregate stats. */
@@ -244,6 +285,8 @@ public class SessionStore {
             r.setTurnCount(rs.getInt("turn_count"));
             r.setToolCallCount(rs.getInt("tool_call_count"));
             r.setFirstMessage(rs.getString("first_message"));
+            r.setProvenance(rs.getString("provenance"));
+            r.setValidUntil(rs.getString("valid_until"));
             try { r.setRank(rs.getDouble("rank")); } catch (SQLException ignored) {}
             out.add(r);
         }
@@ -275,6 +318,116 @@ public class SessionStore {
         }
         return out.isEmpty() ? "\"\"" : out.toString();
     }
+
+    // ------------------------------------------------------------------
+    // Governance write API: retention & right-to-forget
+    // ------------------------------------------------------------------
+
+    /**
+     * Declare (or clear) the retention window for a memory. Pass null to remove
+     * any expiry. Returns true if the session exists and was updated.
+     */
+    public boolean setRetention(String sessionId, String validUntil) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE sessions SET valid_until = ? WHERE session_id = ?")) {
+            ps.setString(1, validUntil);
+            ps.setString(2, sessionId);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    /**
+     * Exercise the right-to-forget: tombstone a memory so recall can never
+     * surface it again. The row is retained (not deleted) so the forget itself
+     * is auditable via {@link #getGovernance(String)}. Returns true if updated.
+     */
+    public boolean forget(String sessionId, String reason) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE sessions SET forgotten_at = ?, forget_reason = ? WHERE session_id = ?")) {
+            ps.setString(1, nowIso());
+            ps.setString(2, reason);
+            ps.setString(3, sessionId);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    /** Governance metadata for a single memory, or null if the session is unknown. */
+    public Governance getGovernance(String sessionId) throws SQLException {
+        String sql = """
+                SELECT session_id, provenance, valid_until, forgotten_at, forget_reason
+                FROM sessions WHERE session_id = ?
+                """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return new Governance(
+                        rs.getString("session_id"),
+                        rs.getString("provenance"),
+                        rs.getString("valid_until"),
+                        rs.getString("forgotten_at"),
+                        rs.getString("forget_reason"));
+            }
+        }
+    }
+
+    /**
+     * Audit the recall gate for a query: run FTS <em>without</em> the gate and
+     * attach a {@link GovernanceGate.Decision} to every candidate, so an
+     * operator can see which memories were surfaced and which were skipped and
+     * why. This is the audit counterpart to {@link #search(String, int)}.
+     */
+    public List<RecallAudit> auditSearch(String query, int limit) throws SQLException {
+        String sql = """
+                SELECT s.session_id, s.first_message, s.provenance,
+                       s.valid_until, s.forgotten_at, s.forget_reason, rank
+                FROM sessions_fts
+                JOIN sessions s ON sessions_fts.session_id = s.session_id
+                WHERE sessions_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """;
+        java.time.Instant now = java.time.Instant.now();
+        List<RecallAudit> out = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, toFtsQuery(query));
+            ps.setInt(2, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    GovernanceGate.Decision d = GovernanceGate.evaluate(
+                            rs.getString("valid_until"),
+                            rs.getString("forgotten_at"),
+                            rs.getString("forget_reason"),
+                            now);
+                    out.add(new RecallAudit(
+                            rs.getString("session_id"),
+                            rs.getString("first_message"),
+                            rs.getString("provenance"),
+                            d.allowed(),
+                            d.reason()));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** Governance metadata for a memory entry. */
+    public record Governance(
+            String sessionId,
+            String provenance,
+            String validUntil,
+            String forgottenAt,
+            String forgetReason
+    ) {}
+
+    /** One audited recall candidate: whether the gate allowed it, and why not. */
+    public record RecallAudit(
+            String sessionId,
+            String firstMessage,
+            String provenance,
+            boolean allowed,
+            String reason
+    ) {}
 
     /** Aggregate statistics across all sessions. */
     public record Stats(

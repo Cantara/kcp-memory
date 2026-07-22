@@ -72,6 +72,7 @@ public class KcpMemoryDaemon {
         server.createContext("/stats",         new StatsHandler(db));
         server.createContext("/scan",          new ScanHandler(db));
         server.createContext("/events/search", new EventsHandler(db));
+        server.createContext("/governance",    new GovernanceHandler(db));
         server.createContext("/ingest",        ingestHandler);
         server.createContext("/nodes",         new NodesHandler(nodeRegistry));
 
