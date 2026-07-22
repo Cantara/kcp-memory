@@ -7,7 +7,7 @@ entity:
     Episodic memory for Claude Code. Indexes ~/.claude/projects/**/*.jsonl
     session transcripts, subagent transcripts, and ~/.kcp/events.jsonl tool-call
     events into a local SQLite+FTS5 database. Available as a CLI, HTTP daemon
-    (port 7735), and MCP server (8 tools). Solves the blank-slate problem.
+    (port 7735), and MCP server (11 tools). Solves the blank-slate problem.
 
 authority:
   owner: Cantara — Norwegian Software Development Foundation
@@ -28,8 +28,8 @@ signing:
 
 kcp_version: "0.26"
 project: kcp-memory
-app_version: 0.5.0
-updated: "2026-06-20"
+app_version: 0.33.0
+updated: "2026-07-22"
 temporal:
   valid_from: "2026-06-12"
 language: en
@@ -72,14 +72,14 @@ units:
       ]
     content_hash:
       algorithm: sha256
-      value: "0309a52c8c749a18a3248afb5d6bb7a6a87fa8ccf4b629b1a69c8cead2113d6a"
+      value: "30693c9663b54e3ba038a30e9af603b53a86001adc0a9dabc6b5f6613a819fda"
 
   - id: mcp-tools
     path: README.md
-    intent: "What are the 8 MCP tools exposed by kcp-memory and what does each do?"
+    intent: "What are the 11 MCP tools exposed by kcp-memory and what does each do?"
     scope: module
     audience: [ agent, developer ]
-    validated: "2026-03-04"
+    validated: "2026-07-22"
     depends_on: [ readme ]
     triggers:
       [
@@ -92,11 +92,14 @@ units:
         kcp_memory_project_context,
         kcp_memory_subagent_search,
         kcp_memory_session_tree,
-        8 tools
+        kcp_memory_analyze,
+        kcp_memory_forget,
+        kcp_memory_retention,
+        11 tools
       ]
     content_hash:
       algorithm: sha256
-      value: "0309a52c8c749a18a3248afb5d6bb7a6a87fa8ccf4b629b1a69c8cead2113d6a"
+      value: "30693c9663b54e3ba038a30e9af603b53a86001adc0a9dabc6b5f6613a819fda"
 
   - id: three-layer-model
     path: README.md
@@ -117,7 +120,7 @@ units:
       ]
     content_hash:
       algorithm: sha256
-      value: "0309a52c8c749a18a3248afb5d6bb7a6a87fa8ccf4b629b1a69c8cead2113d6a"
+      value: "30693c9663b54e3ba038a30e9af603b53a86001adc0a9dabc6b5f6613a819fda"
 
 manifests:
   - url: https://cantara.github.io/knowledge-context-protocol/knowledge.yaml
