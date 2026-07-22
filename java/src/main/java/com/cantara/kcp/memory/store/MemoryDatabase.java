@@ -75,7 +75,8 @@ public class MemoryDatabase implements AutoCloseable {
                 "/db/V4__output_preview.sql",
                 "/db/V5__manifest_version.sql",
                 "/db/V6__peer_sync.sql",
-                "/db/V7__pending_tasks.sql"}) {
+                "/db/V7__pending_tasks.sql",
+                "/db/V8__memory_governance.sql"}) {
 
             String version = resource.substring(resource.lastIndexOf('/') + 1, resource.lastIndexOf('.'));
 
@@ -127,7 +128,9 @@ public class MemoryDatabase implements AutoCloseable {
                 new MigrationCheck("V6__peer_sync",
                         "SELECT 1 FROM pragma_table_info('sessions') WHERE name='source_instance'"),
                 new MigrationCheck("V7__pending_tasks",
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_tasks'")
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_tasks'"),
+                new MigrationCheck("V8__memory_governance",
+                        "SELECT 1 FROM pragma_table_info('sessions') WHERE name='valid_until'")
         );
         for (MigrationCheck check : checks) {
             boolean present;

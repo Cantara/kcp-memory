@@ -16,6 +16,8 @@ public class SearchResult {
     private int toolCallCount;
     private String firstMessage;
     private double rank;        // FTS rank (lower = more relevant), 0 if non-FTS
+    private String provenance;  // governance: origin descriptor of this memory
+    private String validUntil;  // governance: retention expiry (ISO-8601 UTC), null = no expiry
 
     public SearchResult() {}
 
@@ -51,4 +53,10 @@ public class SearchResult {
 
     public double getRank()               { return rank; }
     public void setRank(double v)         { this.rank = v; }
+
+    public String getProvenance()         { return provenance; }
+    public void setProvenance(String v)   { this.provenance = v; }
+
+    public String getValidUntil()         { return validUntil; }
+    public void setValidUntil(String v)   { this.validUntil = v; }
 }
