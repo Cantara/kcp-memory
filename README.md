@@ -371,7 +371,7 @@ The HTTP daemon runs on `http://localhost:7735`:
 | `/scan?force=true` | POST | Trigger an incremental scan (async) |
 | `/events/search?q=<query>&limit=20` | GET | FTS5 search over tool-call events *(v0.2.0)* |
 | `/governance?session=<id>` | GET | Governance metadata (provenance, retention, forgotten status) for a session *(v0.33.0)* |
-| `/governance/audit?session=<id>` | GET | Governance audit trail for a session *(v0.33.0)* |
+| `/governance/audit?q=<query>&limit=20` | GET | Audit the recall gate for a query: which candidates are surfaced vs. skipped, and why *(v0.33.0)* |
 | `/governance/retention` | POST | Declare or clear a retention window: `{session, valid_until}` *(v0.33.0)* |
 | `/governance/forget` | POST | Exercise the right-to-forget: `{session, reason}` *(v0.33.0)* |
 

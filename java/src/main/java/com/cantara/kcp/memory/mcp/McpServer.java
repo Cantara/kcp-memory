@@ -11,6 +11,7 @@ import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
 import com.cantara.kcp.memory.store.AgentSessionStore;
 import com.cantara.kcp.memory.store.EventStore;
+import com.cantara.kcp.memory.store.GovernanceGate;
 import com.cantara.kcp.memory.store.ManifestQualityStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.SessionStore;
@@ -417,13 +418,32 @@ public class McpServer {
                 : "Retention set for " + s.getSessionId() + " — expires " + validUntil + ".";
     }
 
+    /**
+     * If a resolved session has been forgotten or its retention window has
+     * expired, returns the audit reason. Returns null if the session is allowed
+     * to be surfaced. Content-exposing tools must check this before rendering
+     * session content — the recall gate that protects search/list otherwise
+     * doesn't cover direct-by-ID lookups.
+     */
+    private static String governanceDenialReason(SessionStore store, String resolvedSessionId) throws Exception {
+        SessionStore.Governance g = store.getGovernance(resolvedSessionId);
+        if (g == null) return null;
+        GovernanceGate.Decision d = GovernanceGate.evaluate(
+                g.validUntil(), g.forgottenAt(), g.forgetReason(), java.time.Instant.now());
+        return d.allowed() ? null : d.reason();
+    }
+
     private String toolSessionDetail(JsonNode args) throws Exception {
         String sessionId = args.path("session_id").asText("").strip();
         if (sessionId.isEmpty()) return "Error: session_id is required";
 
-        Session s = new SessionStore(db).getByIdOrPrefix(sessionId);
+        SessionStore store = new SessionStore(db);
+        Session s = store.getByIdOrPrefix(sessionId);
         UsageLogger.logGet(sessionId);
         if (s == null) return "Session not found: " + sessionId;
+
+        String denied = governanceDenialReason(store, s.getSessionId());
+        if (denied != null) return "Session " + s.getSessionId() + " is not accessible: " + denied;
 
         StringBuilder sb = new StringBuilder();
         sb.append("Session: ").append(s.getSessionId()).append("\n");
@@ -528,14 +548,17 @@ public class McpServer {
         // Refresh agent index
         new AgentSessionScanner(db).scan(false);
 
-        Session            parent     = new SessionStore(db).getByIdOrPrefix(sessionId);
-        String             resolvedId = parent != null ? parent.getSessionId() : sessionId;
-        List<AgentSession> agents = new AgentSessionStore(db).listByParent(resolvedId, 100);
+        SessionStore        sessionStore = new SessionStore(db);
+        Session             parent       = sessionStore.getByIdOrPrefix(sessionId);
+        String              resolvedId   = parent != null ? parent.getSessionId() : sessionId;
+        List<AgentSession>  agents = new AgentSessionStore(db).listByParent(resolvedId, 100);
+        String              parentDenied = parent != null
+                ? governanceDenialReason(sessionStore, parent.getSessionId()) : null;
 
         StringBuilder sb = new StringBuilder();
 
         // Parent session header
-        if (parent != null) {
+        if (parent != null && parentDenied == null) {
             String date = parent.getStartedAt() != null ? parent.getStartedAt().substring(0, 10) : "?";
             sb.append("Session: ").append(parent.getSessionId()).append("\n");
             sb.append("Date:    ").append(date).append("\n");
@@ -547,6 +570,9 @@ public class McpServer {
                 if (msg.length() > 100) msg = msg.substring(0, 100) + "…";
                 sb.append("Task:    \"").append(msg).append("\"\n");
             }
+        } else if (parent != null) {
+            sb.append("Session: ").append(parent.getSessionId())
+              .append(" is not accessible: ").append(parentDenied).append("\n");
         } else {
             sb.append("Session: ").append(sessionId).append(" (not indexed as main session)\n");
         }
