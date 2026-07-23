@@ -166,6 +166,7 @@ class SessionGovernanceTest {
                 java.util.stream.Collectors.toMap(SessionStore.RecallAudit::sessionId, a -> a));
         assertTrue(byId.get("audit-live").allowed());
         assertNull(byId.get("audit-live").reason());
+        assertEquals("audit topic alpha", byId.get("audit-live").firstMessage());
 
         assertFalse(byId.get("audit-exp").allowed());
         assertTrue(byId.get("audit-exp").reason().contains("expired"));
@@ -173,6 +174,82 @@ class SessionGovernanceTest {
         assertFalse(byId.get("audit-forgot").allowed());
         assertTrue(byId.get("audit-forgot").reason().contains("forgotten"));
         assertTrue(byId.get("audit-forgot").reason().contains("sensitive"));
+    }
+
+    @Test
+    void auditSearchRedactsContentForGatedOutCandidates() throws Exception {
+        Session exp = makeSession("audit-redact-exp", "/src/a", "secret expired content");
+        Session forgot = makeSession("audit-redact-forgot", "/src/a", "secret forgotten content");
+        store.upsert(exp);
+        store.upsert(forgot);
+        store.setRetention("audit-redact-exp", "2000-01-01T00:00:00Z");
+        store.forget("audit-redact-forgot", "contains secret");
+
+        List<SessionStore.RecallAudit> audit = store.auditSearch("secret", 10);
+        var byId = audit.stream().collect(
+                java.util.stream.Collectors.toMap(SessionStore.RecallAudit::sessionId, a -> a));
+
+        assertNull(byId.get("audit-redact-exp").firstMessage(),
+                "expired candidate's content must not leak through the audit trail");
+        assertNull(byId.get("audit-redact-forgot").firstMessage(),
+                "forgotten candidate's content must not leak through the audit trail");
+    }
+
+    // --- retention validation --------------------------------------------
+
+    @Test
+    void setRetentionRejectsUnparseableDate() throws Exception {
+        store.upsert(makeSession("sess-bad-date", "/src/proj", "seed"));
+        assertThrows(IllegalArgumentException.class,
+                () -> store.setRetention("sess-bad-date", "not-a-date"));
+        // Rejected input must not be persisted — the memory stays recallable, not
+        // silently "not yet expired" forever.
+        assertNull(store.getGovernance("sess-bad-date").validUntil());
+    }
+
+    @Test
+    void setRetentionAcceptsParseableDate() throws Exception {
+        store.upsert(makeSession("sess-good-date", "/src/proj", "seed"));
+        assertTrue(store.setRetention("sess-good-date", "2099-01-01T00:00:00Z"));
+        assertEquals("2099-01-01T00:00:00Z", store.getGovernance("sess-good-date").validUntil());
+    }
+
+    @Test
+    void setRetentionStillAllowsClearingWithNull() throws Exception {
+        store.upsert(makeSession("sess-clear-null", "/src/proj", "seed"));
+        store.setRetention("sess-clear-null", "2099-01-01T00:00:00Z");
+        assertTrue(store.setRetention("sess-clear-null", null));
+        assertNull(store.getGovernance("sess-clear-null").validUntil());
+    }
+
+    // --- getByIdOrPrefixIfAllowed -----------------------------------------
+
+    @Test
+    void getByIdOrPrefixIfAllowedReturnsNullForForgottenSession() throws Exception {
+        Session s = makeSession("sess-gate-forgot", "/src/proj", "secret content");
+        s.setAllUserText("secret content the user wants gone");
+        store.upsert(s);
+        store.forget("sess-gate-forgot", "user asked to forget");
+
+        assertNull(store.getByIdOrPrefixIfAllowed("sess-gate-forgot"),
+                "forgotten session must not be readable through the gated accessor");
+        // Raw accessor still works — governance-management tools rely on this.
+        assertNotNull(store.getByIdOrPrefix("sess-gate-forgot"));
+    }
+
+    @Test
+    void getByIdOrPrefixIfAllowedReturnsNullForExpiredSession() throws Exception {
+        store.upsert(makeSession("sess-gate-exp", "/src/proj", "seed"));
+        store.setRetention("sess-gate-exp", "2000-01-01T00:00:00Z");
+
+        assertNull(store.getByIdOrPrefixIfAllowed("sess-gate-exp"));
+        assertNotNull(store.getByIdOrPrefix("sess-gate-exp"));
+    }
+
+    @Test
+    void getByIdOrPrefixIfAllowedReturnsSessionWhenLive() throws Exception {
+        store.upsert(makeSession("sess-gate-live", "/src/proj", "seed"));
+        assertNotNull(store.getByIdOrPrefixIfAllowed("sess-gate-live"));
     }
 
     private Session makeSession(String id, String projectDir, String firstMessage) {

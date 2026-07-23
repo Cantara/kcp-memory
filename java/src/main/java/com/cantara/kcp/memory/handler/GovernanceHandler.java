@@ -45,6 +45,8 @@ public class GovernanceHandler extends BaseHandler {
             } else {
                 sendError(ex, 405, "Method not allowed");
             }
+        } catch (IllegalArgumentException e) {
+            sendError(ex, 400, e.getMessage());
         } catch (Exception e) {
             sendError(ex, 500, "Governance operation failed: " + e.getMessage());
         }

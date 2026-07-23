@@ -326,8 +326,22 @@ public class SessionStore {
     /**
      * Declare (or clear) the retention window for a memory. Pass null to remove
      * any expiry. Returns true if the session exists and was updated.
+     *
+     * @throws IllegalArgumentException if validUntil is non-null/blank and not a
+     *         parseable ISO-8601 UTC instant. RECALL_GATE compares valid_until
+     *         lexicographically in SQL rather than parsing it, so a malformed
+     *         value must be rejected here — otherwise it could sort as "not yet
+     *         expired" and be recalled forever instead of failing closed.
      */
     public boolean setRetention(String sessionId, String validUntil) throws SQLException {
+        if (validUntil != null && !validUntil.isBlank()) {
+            try {
+                java.time.Instant.parse(validUntil.trim());
+            } catch (java.time.format.DateTimeParseException e) {
+                throw new IllegalArgumentException(
+                        "valid_until must be an ISO-8601 UTC instant (e.g. 2026-12-31T00:00:00Z): " + validUntil);
+            }
+        }
         try (PreparedStatement ps = conn.prepareStatement(
                 "UPDATE sessions SET valid_until = ? WHERE session_id = ?")) {
             ps.setString(1, validUntil);
@@ -349,6 +363,26 @@ public class SessionStore {
             ps.setString(3, sessionId);
             return ps.executeUpdate() > 0;
         }
+    }
+
+    /**
+     * Like {@link #getByIdOrPrefix}, but applies the same recall gate as
+     * {@link #search} and {@link #list}: returns null if the resolved session has
+     * been forgotten or its retention window has expired. Content-exposing tools
+     * (session detail, session tree) must resolve through this instead of the raw
+     * accessor, or a forgotten memory can be read back in full despite being
+     * gated out of every other recall path. Governance-management operations
+     * (forget, retention) intentionally keep using the raw accessor, since they
+     * must be able to find and re-manage a session that is already governed away.
+     */
+    public Session getByIdOrPrefixIfAllowed(String sessionId) throws SQLException {
+        Session s = getByIdOrPrefix(sessionId);
+        if (s == null) return null;
+        Governance g = getGovernance(s.getSessionId());
+        if (g == null) return s;
+        GovernanceGate.Decision d = GovernanceGate.evaluate(
+                g.validUntil(), g.forgottenAt(), g.forgetReason(), java.time.Instant.now());
+        return d.allowed() ? s : null;
     }
 
     /** Governance metadata for a single memory, or null if the session is unknown. */
@@ -399,9 +433,12 @@ public class SessionStore {
                             rs.getString("forgotten_at"),
                             rs.getString("forget_reason"),
                             now);
+                    // The audit trail proves a candidate was gated out — it must never
+                    // itself become a channel for reading content that governance denied.
+                    String firstMessage = d.allowed() ? rs.getString("first_message") : null;
                     out.add(new RecallAudit(
                             rs.getString("session_id"),
-                            rs.getString("first_message"),
+                            firstMessage,
                             rs.getString("provenance"),
                             d.allowed(),
                             d.reason()));
