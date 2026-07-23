@@ -28,8 +28,8 @@ signing:
 
 kcp_version: "0.26"
 project: kcp-memory
-app_version: 0.33.0
-updated: "2026-07-22"
+app_version: 0.34.0
+updated: "2026-07-23"
 temporal:
   valid_from: "2026-06-12"
 language: en
