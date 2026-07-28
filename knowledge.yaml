@@ -26,7 +26,7 @@ signing:
   signature: "https://raw.githubusercontent.com/Cantara/kcp-memory/main/knowledge\
     .yaml.sig"
 
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: kcp-memory
 app_version: 0.34.0
 updated: "2026-07-23"
@@ -123,9 +123,13 @@ units:
       value: "30693c9663b54e3ba038a30e9af603b53a86001adc0a9dabc6b5f6613a819fda"
 
 manifests:
-  - url: https://cantara.github.io/knowledge-context-protocol/knowledge.yaml
+  # §3.6: `id` is REQUIRED and is how federation.manifest references resolve.
+  # Without it these entries are unreferenceable and the manifest fails validation.
+  - id: kcp-spec
+    url: https://cantara.github.io/knowledge-context-protocol/knowledge.yaml
     relationship: foundation
-  - url: https://wiki.cantara.no/knowledge/projects/kcp.yaml
+  - id: cantara-org
+    url: https://wiki.cantara.no/knowledge/projects/kcp.yaml
     relationship: org-context
 
 relationships:
