@@ -71,7 +71,7 @@ units:
       ]
     content_hash:
       algorithm: sha256
-      value: "30693c9663b54e3ba038a30e9af603b53a86001adc0a9dabc6b5f6613a819fda"
+      value: "7e9af5207e7cf487b47a4ff4f19e7483c4c8115c37358737192b2c6a6a8e99b5"
 
   - id: mcp-tools
     path: README.md
@@ -98,7 +98,7 @@ units:
       ]
     content_hash:
       algorithm: sha256
-      value: "30693c9663b54e3ba038a30e9af603b53a86001adc0a9dabc6b5f6613a819fda"
+      value: "7e9af5207e7cf487b47a4ff4f19e7483c4c8115c37358737192b2c6a6a8e99b5"
 
   - id: three-layer-model
     path: README.md
@@ -119,7 +119,7 @@ units:
       ]
     content_hash:
       algorithm: sha256
-      value: "30693c9663b54e3ba038a30e9af603b53a86001adc0a9dabc6b5f6613a819fda"
+      value: "7e9af5207e7cf487b47a4ff4f19e7483c4c8115c37358737192b2c6a6a8e99b5"
 
 manifests:
   # §3.6: `id` is REQUIRED and is how federation.manifest references resolve.
