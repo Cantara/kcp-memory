@@ -1,15 +1,18 @@
 package com.cantara.kcp.memory.mcp;
 
 import com.cantara.kcp.memory.model.AgentSession;
+import com.cantara.kcp.memory.model.Decision;
 import com.cantara.kcp.memory.model.ManifestQualityRecord;
 import com.cantara.kcp.memory.model.ManifestVersionRecord;
 import com.cantara.kcp.memory.model.SearchResult;
 import com.cantara.kcp.memory.model.Session;
 import com.cantara.kcp.memory.model.ToolEvent;
 import com.cantara.kcp.memory.scanner.AgentSessionScanner;
+import com.cantara.kcp.memory.scanner.DecisionScanner;
 import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
 import com.cantara.kcp.memory.store.AgentSessionStore;
+import com.cantara.kcp.memory.store.DecisionStore;
 import com.cantara.kcp.memory.store.EventStore;
 import com.cantara.kcp.memory.store.GovernanceGate;
 import com.cantara.kcp.memory.store.ManifestQualityStore;
@@ -79,6 +82,7 @@ public class McpServer {
         new SessionScanner(db).scan(false);
         new EventLogScanner(db).scan();
         new AgentSessionScanner(db).scan(false);
+        new DecisionScanner(db).scan();
 
         // stdout = protocol; auto-flush so responses are sent immediately
         PrintWriter    out = new PrintWriter(System.out, true);
@@ -257,6 +261,21 @@ public class McpServer {
                         .optional("valid_until", "string", "ISO-8601 UTC expiry (e.g. 2026-12-31T00:00:00Z); empty clears it")
         ));
 
+        tools.add(tool(
+                "kcp_memory_decisions",
+                "Query the decision memory index — architectural decisions, constraints, and anti-patterns " +
+                "discovered across Claude Code sessions. Indexed from project .sdd/decisions/*.yaml files. " +
+                "Prevents re-reasoning about past decisions and avoids repeating known failures. " +
+                "Use this to recall 'what did we decide about X?' or 'what are the known constraints for Y?' " +
+                "Example queries: 'Lambda deployment', 'video codec alpha channel', 'testing credentials'. " +
+                "Added in v0.36.0.",
+                schema()
+                        .required("query",  "string",  "Search terms — keywords matched against decision what/why/tags/domain")
+                        .optional("type",   "string",  "Filter by type: decision | anti-pattern | constraint | workaround")
+                        .optional("domain", "string",  "Filter by domain: deployment | testing | video-build | etc.")
+                        .optional("limit",  "integer", "Max results (default 10)")
+        ));
+
         return result;
     }
 
@@ -291,6 +310,7 @@ public class McpServer {
                 case "kcp_memory_analyze"         -> toolAnalyze(args);
                 case "kcp_memory_forget"          -> toolForget(args);
                 case "kcp_memory_retention"       -> toolRetention(args);
+                case "kcp_memory_decisions"       -> toolDecisions(args);
                 default                            -> "Unknown tool: " + name;
             };
         } catch (Exception e) {
@@ -753,6 +773,77 @@ public class McpServer {
         error.put("code",    code);
         error.put("message", message);
         return mapper.writeValueAsString(resp);
+    }
+
+    private String toolDecisions(JsonNode args) throws Exception {
+        String query  = args.path("query").asText("").strip();
+        String type   = args.path("type").asText(null);
+        String domain = args.path("domain").asText(null);
+        int    limit  = args.path("limit").asInt(10);
+
+        if (query.isEmpty() && (type == null || type.isBlank()) && (domain == null || domain.isBlank())) {
+            return "Error: query, type, or domain required";
+        }
+
+        DecisionStore store = new DecisionStore(db);
+        List<Decision> results;
+
+        // If query is provided, use FTS search; otherwise filter by type/domain
+        if (!query.isEmpty()) {
+            results = store.search(query, limit);
+            // Further filter by type/domain if provided
+            if ((type != null && !type.isBlank()) || (domain != null && !domain.isBlank())) {
+                String finalType = type;
+                String finalDomain = domain;
+                results = results.stream()
+                        .filter(d -> (finalType == null || finalType.isBlank() || d.type().equals(finalType)))
+                        .filter(d -> (finalDomain == null || finalDomain.isBlank() || d.domain().equals(finalDomain)))
+                        .limit(limit)
+                        .toList();
+            }
+        } else {
+            // No query, just filter
+            results = store.filter(type, domain, limit);
+        }
+
+        UsageLogger.logDecisionQuery(query, type, domain, results.size());
+
+        if (results.isEmpty()) {
+            return String.format("No decisions found for: query='%s' type='%s' domain='%s'",
+                    query, type != null ? type : "", domain != null ? domain : "");
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(results.size()).append(" decision(s) found:\n\n");
+
+        for (Decision d : results) {
+            sb.append("## ").append(d.id()).append("\n");
+            sb.append("**Type**: ").append(d.type()).append("  |  ");
+            sb.append("**Domain**: ").append(d.domain()).append("\n");
+            sb.append("**What**: ").append(d.what()).append("\n");
+            sb.append("**Why**: ").append(d.why()).append("\n");
+
+            if (d.alternatives() != null && !d.alternatives().isEmpty()) {
+                sb.append("**Alternatives**:\n");
+                for (String alt : d.alternatives()) {
+                    sb.append("  - ").append(alt).append("\n");
+                }
+            }
+
+            sb.append("**Learned**: ").append(d.learned()).append("\n");
+            if (d.updated() != null && !d.updated().isBlank()) {
+                sb.append("**Updated**: ").append(d.updated()).append("\n");
+            }
+
+            if (d.tags() != null && !d.tags().isEmpty()) {
+                sb.append("**Tags**: ").append(String.join(", ", d.tags())).append("\n");
+            }
+
+            sb.append("**Project**: ").append(d.projectPath()).append("\n");
+            sb.append("\n");
+        }
+
+        return sb.toString();
     }
 
     // ------------------------------------------------------------------
