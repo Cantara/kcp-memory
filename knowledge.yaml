@@ -121,6 +121,71 @@ units:
       algorithm: sha256
       value: "7e9af5207e7cf487b47a4ff4f19e7483c4c8115c37358737192b2c6a6a8e99b5"
 
+  # The procedural plane (§4.3a, RFC-0028): kcp-memory's four operational skills declared
+  # as governed procedures. Tool names are Claude Code's — the runtime that adjudicates
+  # them here.
+
+  - id: exocortex-serve-setup
+    path: .claude/skills/exocortex-serve-setup/SKILL.md
+    kind: skill
+    intent: "How does an operator configure and test the kcp-memory --serve external API for mobile access?"
+    scope: project
+    audience: [agent, operator]
+    triggers: [serve, external API, android access, api key, port 8443]
+    load_eligible: true
+    action_scope:
+      tools: [Bash, Read]
+      capabilities: ["exocortex.serve-setup"]
+    content_hash:
+      algorithm: sha256
+      value: "ef685eba0628b1735b29c7443b684884d34eb78a53402cca3be68157047b2d36"
+
+  - id: exocortex-peer-setup
+    path: .claude/skills/exocortex-peer-setup/SKILL.md
+    kind: skill
+    intent: "How does an operator configure and test --peer connections between ExoCortex instances?"
+    scope: project
+    audience: [agent, operator]
+    triggers: [peer, sync, fleet, connect instances, peer connection]
+    load_eligible: true
+    action_scope:
+      tools: [Bash, Read]
+      capabilities: ["exocortex.peer-setup"]
+    content_hash:
+      algorithm: sha256
+      value: "98aaa01efeef23e44f44181cb97ceee6a66518e887f464d0a4085c4321b57c89"
+
+  - id: exocortex-debug
+    path: .claude/skills/exocortex-debug/SKILL.md
+    kind: skill
+    intent: "How does an operator diagnose sync issues, tunnel failures, and event-flow problems across the ExoCortex fleet?"
+    scope: project
+    audience: [agent, operator]
+    triggers: [debug, sync issue, tunnel, event flow, diagnose]
+    load_eligible: true
+    action_scope:
+      # Diagnosis reads and probes; it does not edit the systems it is diagnosing.
+      tools: [Bash, Read, Grep]
+      capabilities: ["exocortex.debug"]
+    content_hash:
+      algorithm: sha256
+      value: "f7a2e01617d683d94f4e29a1ac947c155c117038361415e4e38b17ff175f8cdf"
+
+  - id: exocortex-android-app
+    path: .claude/skills/exocortex-android-app/SKILL.md
+    kind: skill
+    intent: "How does a developer navigate, build, and avoid the known gotchas of the kcp-sync-android control plane?"
+    scope: project
+    audience: [agent]
+    triggers: [android, kcp-sync-android, control plane, build apk]
+    load_eligible: true
+    action_scope:
+      tools: [Bash, Read, Edit, Write, Grep]
+      capabilities: ["exocortex.android-dev"]
+    content_hash:
+      algorithm: sha256
+      value: "748891026a1df0b0b981e394c9553fcb538d819e88831300e24867ccf9c74aa2"
+
 manifests:
   # §3.6: `id` is REQUIRED and is how federation.manifest references resolve.
   # Without it these entries are unreferenceable and the manifest fails validation.
