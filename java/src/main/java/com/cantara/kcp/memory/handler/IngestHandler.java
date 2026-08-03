@@ -4,6 +4,7 @@ import com.cantara.kcp.memory.peer.PeerSyncService;
 import com.cantara.kcp.memory.server.EventBroadcaster;
 import com.cantara.kcp.memory.server.TcpExchange;
 import com.cantara.kcp.memory.store.MemoryDatabase;
+import com.cantara.kcp.memory.store.ProvenanceFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -96,11 +97,16 @@ public class IngestHandler extends BaseHandler {
 
             if (sessionId == null || startedAt == null) continue;
 
+            // Every memory carries provenance (#47) — distinguishable from a locally
+            // scanned session so a multi-node setup can tell where a memory came from.
+            String provenance = ProvenanceFormat.peer(source, projectDir, sessionId);
+
+            int inserted;
             try (PreparedStatement ps = db.getConnection().prepareStatement("""
                     INSERT OR IGNORE INTO sessions
                         (session_id, project_dir, first_message, started_at,
-                         turn_count, tool_call_count, scanned_at, source_instance)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)
+                         turn_count, tool_call_count, scanned_at, source_instance, provenance)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
                     """)) {
                 ps.setString(1, sessionId);
                 ps.setString(2, projectDir);
@@ -109,7 +115,24 @@ public class IngestHandler extends BaseHandler {
                 ps.setInt(5, turnCount);
                 ps.setInt(6, toolCallCount);
                 ps.setString(7, source);
-                count += ps.executeUpdate();
+                ps.setString(8, provenance);
+                inserted = ps.executeUpdate();
+            }
+            count += inserted;
+
+            // INSERT OR IGNORE was a no-op for a pre-existing session_id — every other
+            // column deliberately stays untouched (matches today's behavior), but backfill
+            // provenance if it was never set, first-write-wins like SessionStore.upsert's
+            // COALESCE(sessions.provenance, excluded.provenance).
+            if (inserted == 0) {
+                try (PreparedStatement ps = db.getConnection().prepareStatement("""
+                        UPDATE sessions SET provenance = ?
+                        WHERE session_id = ? AND (provenance IS NULL OR provenance = '')
+                        """)) {
+                    ps.setString(1, provenance);
+                    ps.setString(2, sessionId);
+                    ps.executeUpdate();
+                }
             }
         }
         LOG.fine("Ingested " + count + " sessions from peer push");

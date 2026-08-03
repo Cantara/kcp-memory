@@ -2,6 +2,7 @@ package com.cantara.kcp.memory.peer;
 
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.PeerCursorStore;
+import com.cantara.kcp.memory.store.ProvenanceFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -274,11 +275,16 @@ public class PeerSyncService {
 
             if (sessionId == null || startedAt == null) continue;
 
+            // Every memory carries provenance (#47) — same distinguishable format the
+            // /ingest/sessions push path uses, so pulled sessions aren't left null.
+            String provenance = ProvenanceFormat.peer(source, projectDir, sessionId);
+
+            int inserted;
             try (PreparedStatement ps = db.getConnection().prepareStatement("""
                     INSERT OR IGNORE INTO sessions
                         (session_id, project_dir, first_message, started_at,
-                         turn_count, tool_call_count, scanned_at, source_instance)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)
+                         turn_count, tool_call_count, scanned_at, source_instance, provenance)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
                     """)) {
                 ps.setString(1, sessionId);
                 ps.setString(2, projectDir);
@@ -287,7 +293,19 @@ public class PeerSyncService {
                 ps.setInt(5, turnCount);
                 ps.setInt(6, toolCallCount);
                 ps.setString(7, source);
-                ps.executeUpdate();
+                ps.setString(8, provenance);
+                inserted = ps.executeUpdate();
+            }
+
+            if (inserted == 0) {
+                try (PreparedStatement ps = db.getConnection().prepareStatement("""
+                        UPDATE sessions SET provenance = ?
+                        WHERE session_id = ? AND (provenance IS NULL OR provenance = '')
+                        """)) {
+                    ps.setString(1, provenance);
+                    ps.setString(2, sessionId);
+                    ps.executeUpdate();
+                }
             }
 
             latestTs = startedAt;

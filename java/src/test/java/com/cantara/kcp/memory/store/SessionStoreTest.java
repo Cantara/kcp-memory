@@ -150,6 +150,27 @@ class SessionStoreTest {
         assertEquals(19, stats.totalToolCalls());
     }
 
+    @Test
+    void statsReportsLastScannedAt() throws SQLException {
+        Session s1 = makeSession("sess-010", "/src/y", "First");
+        s1.setScannedAt("2026-04-01T10:00:00Z");
+        store.upsert(s1);
+
+        Session s2 = makeSession("sess-011", "/src/y", "Second");
+        s2.setScannedAt("2026-04-02T10:00:00Z");
+        store.upsert(s2);
+
+        SessionStore.Stats stats = store.stats();
+        assertEquals("2026-04-02T10:00:00Z", stats.lastScannedAt());
+    }
+
+    @Test
+    void statsReportsNullLastScannedAtWhenEmpty() throws SQLException {
+        SessionStore.Stats stats = store.stats();
+        assertEquals(0, stats.totalSessions());
+        assertNull(stats.lastScannedAt());
+    }
+
     private Session makeSession(String id, String projectDir, String firstMessage) {
         Session s = new Session();
         s.setSessionId(id);

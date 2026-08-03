@@ -1,0 +1,15 @@
+[Unit]
+Description=kcp-memory daemon
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.kcp/kcp.env
+ExecStart=/usr/bin/env java --enable-native-access=ALL-UNNAMED -jar %h/.kcp/kcp-memory-daemon.jar daemon
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/.kcp/daemon.log
+StandardError=append:%h/.kcp/daemon.log
+
+[Install]
+WantedBy=default.target
