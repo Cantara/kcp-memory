@@ -18,15 +18,23 @@ import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.store.ToolUsageStore;
 import com.cantara.kcp.memory.update.UpdateChecker;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 
 /**
  * kcp-memory CLI — subcommands: daemon, scan, search, list, stats, analyze, events, agents, mcp
@@ -38,6 +46,7 @@ import java.util.concurrent.Callable;
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
+                KcpMemoryCli.StatusCmd.class,
                 KcpMemoryCli.ScanCmd.class,
                 KcpMemoryCli.SearchCmd.class,
                 KcpMemoryCli.ListCmd.class,
@@ -58,13 +67,56 @@ public class KcpMemoryCli implements Callable<Integer> {
     }
 
     // ------------------------------------------------------------------
+    // shared options (#46) — reused across every subcommand that opens the
+    // DB or talks to the daemon, so they always agree on port/db-path with
+    // each other and with whatever KCP_MEMORY_PORT/KCP_MEMORY_DB is set to.
+    // ------------------------------------------------------------------
+    static class DbPathMixin {
+        @Option(names = "--db-path",
+                description = "Path to the kcp-memory SQLite database (default: ~/.kcp/memory.db, or KCP_MEMORY_DB env)",
+                defaultValue = "${KCP_MEMORY_DB}")
+        String dbPath;
+
+        MemoryDatabase open() throws java.sql.SQLException {
+            if (dbPath == null || dbPath.isBlank() || dbPath.equals("${KCP_MEMORY_DB}")) {
+                return new MemoryDatabase();
+            }
+            return new MemoryDatabase(Path.of(dbPath.replace("~", System.getProperty("user.home"))));
+        }
+    }
+
+    static class PortMixin {
+        @Option(names = "--port",
+                description = "Daemon HTTP port (default: 7735, or KCP_MEMORY_PORT env)",
+                defaultValue = "${KCP_MEMORY_PORT}")
+        String port;
+
+        int resolve() {
+            if (port == null || port.isBlank() || port.equals("${KCP_MEMORY_PORT}")) {
+                return KcpMemoryDaemon.DEFAULT_PORT;
+            }
+            try {
+                return Integer.parseInt(port.trim());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("Invalid --port value: " + port);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // daemon — start the HTTP daemon
     // ------------------------------------------------------------------
-    @Command(name = "daemon", description = "Start the kcp-memory HTTP daemon on port 7735")
+    @Command(name = "daemon", description = "Start the kcp-memory HTTP daemon")
     static class DaemonCmd implements Callable<Integer> {
 
+        @Mixin
+        DbPathMixin dbOpt = new DbPathMixin();
+
+        @Mixin
+        PortMixin portOpt = new PortMixin();
+
         @Option(names = "--peer", arity = "0..*",
-                description = "Peer URI(s) for bidirectional sync (repeatable: ssh://user@host or tcp://host:port)")
+                description = "Peer URI(s) for bidirectional sync (repeatable: ssh://user@host[:sshport][?port=remoteHttpPort], or tcp://host:port)")
         private List<String> peerUris;
 
         @Option(names = "--serve",
@@ -96,11 +148,11 @@ public class KcpMemoryCli implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
-            MemoryDatabase db = new MemoryDatabase();
-            KcpMemoryDaemon daemon = new KcpMemoryDaemon(db);
+            int port = portOpt.resolve();
+            MemoryDatabase db = dbOpt.open();
+            KcpMemoryDaemon daemon = new KcpMemoryDaemon(db, port);
             daemon.start();
-            System.out.printf("[kcp-memory] daemon running on port %d — press Ctrl+C to stop%n",
-                    KcpMemoryDaemon.PORT);
+            System.out.printf("[kcp-memory] daemon running on port %d — press Ctrl+C to stop%n", port);
 
             // Start peer sync if --peer specified
             String localId = java.net.InetAddress.getLocalHost().getHostName();
@@ -119,13 +171,13 @@ public class KcpMemoryCli implements Callable<Integer> {
                 }
                 String[] parts = serveAddress.split(":");
                 String host = parts.length > 1 ? parts[0] : "0.0.0.0";
-                int port = Integer.parseInt(parts[parts.length - 1]);
+                int externalPort = Integer.parseInt(parts[parts.length - 1]);
 
                 // Expand ~ in capture-dir
                 String expandedCaptureDir = captureDir.replace("~", System.getProperty("user.home"));
 
-                daemon.startExternalServer(host, port, tlsCert, tlsKey, apiKey, expandedCaptureDir, synthesisCmd);
-                System.out.printf("[kcp-memory] external API serving on %s:%d%n", host, port);
+                daemon.startExternalServer(host, externalPort, tlsCert, tlsKey, apiKey, expandedCaptureDir, synthesisCmd);
+                System.out.printf("[kcp-memory] external API serving on %s:%d%n", host, externalPort);
             }
 
             Thread.currentThread().join(); // block until killed
@@ -134,10 +186,86 @@ public class KcpMemoryCli implements Callable<Integer> {
     }
 
     // ------------------------------------------------------------------
+    // status — health, uptime, freshness, process-supervision state (#32)
+    // ------------------------------------------------------------------
+    @Command(name = "status", description = "Show daemon health, uptime, freshness, and process-supervision state")
+    static class StatusCmd implements Callable<Integer> {
+
+        @Mixin
+        PortMixin portOpt = new PortMixin();
+
+        @Override
+        public Integer call() {
+            int port = portOpt.resolve();
+            JsonNode health = fetchHealth(port);
+            if (health == null) {
+                System.out.println("  daemon:      NOT RUNNING (or unreachable on port " + port + ")");
+                printSupervision();
+                return 1;
+            }
+            System.out.println("  daemon:      running");
+            System.out.printf("  version:     %s%n", health.path("version").asText("?"));
+            System.out.printf("  sessions:    %,d%n", health.path("sessions").asLong(0));
+            System.out.printf("  uptime:      %s%n", formatDuration(health.path("uptimeSeconds").asLong(-1)));
+            System.out.printf("  last scan:   %s (%s ago)%n",
+                    health.path("lastScannedAt").asText("never"),
+                    health.hasNonNull("freshnessSeconds") ? formatDuration(health.path("freshnessSeconds").asLong()) : "unknown");
+            printSupervision();
+            return 0;
+        }
+
+        private JsonNode fetchHealth(int port) {
+            try {
+                HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create("http://127.0.0.1:" + port + "/health"))
+                        .timeout(Duration.ofSeconds(2)).GET().build();
+                HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+                return resp.statusCode() == 200 ? new ObjectMapper().readTree(resp.body()) : null;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private void printSupervision() {
+            String os = System.getProperty("os.name", "").toLowerCase();
+            if (os.contains("mac")) {
+                String out = runQuiet("launchctl", "list", "com.cantara.kcp-memory");
+                System.out.printf("  supervision: launchd — %s%n", out != null && !out.isBlank() ? "loaded" : "not loaded");
+            } else if (os.contains("linux")) {
+                String out = runQuiet("systemctl", "--user", "is-active", "kcp-memory");
+                System.out.printf("  supervision: systemd (--user) — %s%n", out != null ? out.trim() : "unknown (systemctl unavailable)");
+            } else {
+                System.out.println("  supervision: unmanaged (unsupported OS for auto-detection)");
+            }
+        }
+
+        private static String runQuiet(String... cmd) {
+            try {
+                Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+                String out = new String(p.getInputStream().readAllBytes());
+                p.waitFor(3, TimeUnit.SECONDS);
+                return out;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private static String formatDuration(long s) {
+            if (s < 0) return "?";
+            long h = s / 3600, m = (s % 3600) / 60, sec = s % 60;
+            return h > 0 ? String.format("%dh%dm", h, m) : m > 0 ? String.format("%dm%ds", m, sec) : sec + "s";
+        }
+    }
+
+    // ------------------------------------------------------------------
     // scan — index session transcripts
     // ------------------------------------------------------------------
     @Command(name = "scan", description = "Scan ~/.claude/projects/ and index new/changed sessions")
     static class ScanCmd implements Callable<Integer> {
+
+        @Mixin
+        DbPathMixin dbOpt = new DbPathMixin();
 
         @Option(names = {"--force", "-f"}, description = "Re-index all sessions, not just new ones")
         boolean force;
@@ -148,7 +276,7 @@ public class KcpMemoryCli implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
-            try (MemoryDatabase db = new MemoryDatabase()) {
+            try (MemoryDatabase db = dbOpt.open()) {
                 // Main session scan
                 SessionScanner scanner = new SessionScanner(db);
                 System.out.println("[kcp-memory] scanning sessions...");
@@ -182,6 +310,9 @@ public class KcpMemoryCli implements Callable<Integer> {
     @Command(name = "search", description = "Search session transcripts using full-text search")
     static class SearchCmd implements Callable<Integer> {
 
+        @Mixin
+        DbPathMixin dbOpt = new DbPathMixin();
+
         @Parameters(arity = "1..*", description = "Search query")
         List<String> queryWords;
 
@@ -191,7 +322,7 @@ public class KcpMemoryCli implements Callable<Integer> {
         @Override
         public Integer call() throws Exception {
             String query = String.join(" ", queryWords);
-            try (MemoryDatabase db = new MemoryDatabase()) {
+            try (MemoryDatabase db = dbOpt.open()) {
                 SessionStore store = new SessionStore(db);
                 List<SearchResult> results = store.search(query, limit);
                 UsageLogger.logSearchSync(query, results.size());
@@ -214,6 +345,9 @@ public class KcpMemoryCli implements Callable<Integer> {
     @Command(name = "list", description = "List recent Claude Code sessions")
     static class ListCmd implements Callable<Integer> {
 
+        @Mixin
+        DbPathMixin dbOpt = new DbPathMixin();
+
         @Option(names = {"--project", "-p"}, description = "Filter by project directory")
         String project;
 
@@ -222,7 +356,7 @@ public class KcpMemoryCli implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
-            try (MemoryDatabase db = new MemoryDatabase()) {
+            try (MemoryDatabase db = dbOpt.open()) {
                 SessionStore store = new SessionStore(db);
                 List<SearchResult> sessions = store.list(project, limit);
                 if (sessions.isEmpty()) {
@@ -246,9 +380,12 @@ public class KcpMemoryCli implements Callable<Integer> {
     @Command(name = "stats", description = "Show aggregate statistics across all indexed sessions")
     static class StatsCmd implements Callable<Integer> {
 
+        @Mixin
+        DbPathMixin dbOpt = new DbPathMixin();
+
         @Override
         public Integer call() throws Exception {
-            try (MemoryDatabase db = new MemoryDatabase()) {
+            try (MemoryDatabase db = dbOpt.open()) {
                 SessionStore sessionStore = new SessionStore(db);
                 ToolUsageStore toolStore  = new ToolUsageStore(db);
                 AgentSessionStore agentStore = new AgentSessionStore(db);
@@ -288,6 +425,9 @@ public class KcpMemoryCli implements Callable<Integer> {
     @Command(name = "analyze", description = "Analyze manifest quality — surface manifests that correlate with retries, errors, and help lookups")
     static class AnalyzeCmd implements Callable<Integer> {
 
+        @Mixin
+        DbPathMixin dbOpt = new DbPathMixin();
+
         @Option(names = {"--top"}, description = "Number of manifests to show (default: 20)", defaultValue = "20")
         int top;
 
@@ -302,7 +442,7 @@ public class KcpMemoryCli implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
-            try (MemoryDatabase db = new MemoryDatabase()) {
+            try (MemoryDatabase db = dbOpt.open()) {
                 // Ingest any new events before analyzing
                 new EventLogScanner(db).scan();
 
@@ -444,6 +584,9 @@ public class KcpMemoryCli implements Callable<Integer> {
         @Command(name = "search", description = "Full-text search over indexed tool-call events")
         static class EventsSearchCmd implements Callable<Integer> {
 
+            @Mixin
+            DbPathMixin dbOpt = new DbPathMixin();
+
             @Parameters(arity = "1..*", description = "Search query")
             List<String> queryWords;
 
@@ -453,7 +596,7 @@ public class KcpMemoryCli implements Callable<Integer> {
             @Override
             public Integer call() throws Exception {
                 String query = String.join(" ", queryWords);
-                try (MemoryDatabase db = new MemoryDatabase()) {
+                try (MemoryDatabase db = dbOpt.open()) {
                     // Ingest any new events before searching
                     new EventLogScanner(db).scan();
 
@@ -505,6 +648,9 @@ public class KcpMemoryCli implements Callable<Integer> {
         @Command(name = "list", description = "List subagent sessions, optionally filtered by parent session")
         static class AgentsListCmd implements Callable<Integer> {
 
+            @Mixin
+            DbPathMixin dbOpt = new DbPathMixin();
+
             @Option(names = {"--session", "-s"}, description = "Filter by parent session ID")
             String sessionId;
 
@@ -513,7 +659,7 @@ public class KcpMemoryCli implements Callable<Integer> {
 
             @Override
             public Integer call() throws Exception {
-                try (MemoryDatabase db = new MemoryDatabase()) {
+                try (MemoryDatabase db = dbOpt.open()) {
                     AgentSessionStore store = new AgentSessionStore(db);
                     List<AgentSession> agents;
                     if (sessionId != null && !sessionId.isBlank()) {
@@ -539,6 +685,9 @@ public class KcpMemoryCli implements Callable<Integer> {
         @Command(name = "search", description = "Search subagent transcripts using full-text search")
         static class AgentsSearchCmd implements Callable<Integer> {
 
+            @Mixin
+            DbPathMixin dbOpt = new DbPathMixin();
+
             @Parameters(arity = "1..*", description = "Search query")
             List<String> queryWords;
 
@@ -548,7 +697,7 @@ public class KcpMemoryCli implements Callable<Integer> {
             @Override
             public Integer call() throws Exception {
                 String query = String.join(" ", queryWords);
-                try (MemoryDatabase db = new MemoryDatabase()) {
+                try (MemoryDatabase db = dbOpt.open()) {
                     AgentSessionStore store = new AgentSessionStore(db);
                     List<AgentSession> results = store.search(query, limit);
                     if (results.isEmpty()) {
@@ -591,11 +740,14 @@ public class KcpMemoryCli implements Callable<Integer> {
     @Command(name = "mcp", description = "Start the kcp-memory MCP stdio server (for ~/.claude/settings.json mcpServers)")
     static class McpCmd implements Callable<Integer> {
 
+        @Mixin
+        DbPathMixin dbOpt = new DbPathMixin();
+
         @Override
         public Integer call() throws Exception {
             // JUL ConsoleHandler already writes to System.err by default —
             // stdout is the MCP protocol channel and must not be polluted.
-            MemoryDatabase db = new MemoryDatabase();
+            MemoryDatabase db = dbOpt.open();
             new McpServer(db).run();
             db.close();
             return 0;

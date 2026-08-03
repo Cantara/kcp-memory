@@ -16,6 +16,7 @@ import com.cantara.kcp.memory.update.UpdateChecker;
 
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
@@ -24,7 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
 /**
- * HTTP daemon — listens on localhost:7735.
+ * HTTP daemon — listens on localhost, port {@link #DEFAULT_PORT} (7735) unless configured otherwise.
  *
  * <p>Uses a plain {@link TcpHttpServer} (ServerSocket + virtual threads) instead of
  * {@code com.sun.net.httpserver.HttpServer}, avoiding the NIO selector dependency
@@ -46,27 +47,38 @@ import java.util.logging.Logger;
 public class KcpMemoryDaemon {
 
     private static final Logger LOG = Logger.getLogger(KcpMemoryDaemon.class.getName());
-    public  static final int    PORT = 7735;
+    public  static final int    DEFAULT_PORT = 7735;
+    /** @deprecated use {@link #DEFAULT_PORT} — kept for source compatibility with embedders. */
+    @Deprecated
+    public  static final int    PORT = DEFAULT_PORT;
 
     private final MemoryDatabase db;
+    private final int port;
     private final NodeRegistry nodeRegistry = new NodeRegistry();
     private final EventBroadcaster broadcaster = new EventBroadcaster();
     private TcpHttpServer server;
     private ScheduledExecutorService scheduler;
     private final List<PeerSyncService> peerSyncServices = new ArrayList<>();
     private ExternalHttpServer externalServer;
+    private volatile Instant startTime;
 
     public KcpMemoryDaemon(MemoryDatabase db) {
+        this(db, DEFAULT_PORT);
+    }
+
+    public KcpMemoryDaemon(MemoryDatabase db, int port) {
         this.db = db;
+        this.port = port;
     }
 
     public void start() throws Exception {
-        server = new TcpHttpServer(PORT);
+        startTime = Instant.now();
+        server = new TcpHttpServer(port);
 
         IngestHandler ingestHandler = new IngestHandler(db);
         ingestHandler.setBroadcaster(broadcaster);
 
-        server.createContext("/health",        new HealthHandler(db));
+        server.createContext("/health",        new HealthHandler(db, startTime));
         server.createContext("/search",        new SearchHandler(db));
         server.createContext("/sessions",      new ListHandler(db));
         server.createContext("/stats",         new StatsHandler(db));
@@ -91,7 +103,7 @@ public class KcpMemoryDaemon {
         server.createContext("/pending", pendingHandler);
 
         server.start();
-        LOG.info("kcp-memory daemon started on port " + PORT);
+        LOG.info("kcp-memory daemon started on port " + port);
 
         // Startup update check — non-blocking, once per 24h
         Thread.ofVirtual().start(() -> {
@@ -164,7 +176,7 @@ public class KcpMemoryDaemon {
         externalServer = new ExternalHttpServer(bindAddress, port, tlsCert, tlsKey, apiKey);
 
         // Register all internal endpoints (same data, external auth)
-        externalServer.createContext("/health", new HealthHandler(db));
+        externalServer.createContext("/health", new HealthHandler(db, startTime));
         externalServer.createContext("/search", new SearchHandler(db));
         externalServer.createContext("/sessions", new ListHandler(db));
         externalServer.createContext("/stats", new StatsHandler(db));

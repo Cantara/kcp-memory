@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cantara.kcp-memory</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>java</string>
+        <string>--enable-native-access=ALL-UNNAMED</string>
+        <string>-jar</string>
+        <string>__HOME__/.kcp/kcp-memory-daemon.jar</string>
+        <string>daemon</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.kcp/daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.kcp/daemon.log</string>
+</dict>
+</plist>

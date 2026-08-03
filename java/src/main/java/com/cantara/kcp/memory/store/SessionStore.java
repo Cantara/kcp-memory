@@ -74,10 +74,7 @@ public class SessionStore {
 
     /** Derive a provenance descriptor from a session's own origin. */
     private static String deriveProvenance(Session s) {
-        String origin = s.getSlug() != null && !s.getSlug().isBlank()
-                ? s.getSlug()
-                : (s.getProjectDir() != null ? s.getProjectDir() : "");
-        return "claude-code:" + origin + "#" + s.getSessionId();
+        return ProvenanceFormat.local(s.getSlug(), s.getProjectDir(), s.getSessionId());
     }
 
     /** Return full session detail by session_id, or null if not found. */
@@ -242,7 +239,8 @@ public class SessionStore {
                   SUM(turn_count)   AS total_turns,
                   SUM(tool_call_count) AS total_tool_calls,
                   MIN(started_at)   AS oldest,
-                  MAX(started_at)   AS newest
+                  MAX(started_at)   AS newest,
+                  MAX(scanned_at)   AS last_scanned_at
                 FROM sessions
                 """;
         try (Statement st = conn.createStatement();
@@ -253,10 +251,11 @@ public class SessionStore {
                         rs.getLong("total_turns"),
                         rs.getLong("total_tool_calls"),
                         rs.getString("oldest"),
-                        rs.getString("newest")
+                        rs.getString("newest"),
+                        rs.getString("last_scanned_at")
                 );
             }
-            return new Stats(0, 0, 0, null, null);
+            return new Stats(0, 0, 0, null, null, null);
         }
     }
 
@@ -472,6 +471,7 @@ public class SessionStore {
             long totalTurns,
             long totalToolCalls,
             String oldest,
-            String newest
+            String newest,
+            String lastScannedAt
     ) {}
 }
