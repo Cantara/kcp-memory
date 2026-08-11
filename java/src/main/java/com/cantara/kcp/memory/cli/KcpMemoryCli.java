@@ -42,7 +42,7 @@ import java.util.concurrent.TimeUnit;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = "0.22.0",
+        version = McpServer.SERVER_VERSION,
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
