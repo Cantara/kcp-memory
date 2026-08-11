@@ -43,7 +43,21 @@ public class MemoryDatabase implements AutoCloseable {
             st.execute("PRAGMA journal_mode=WAL");
             st.execute("PRAGMA synchronous=NORMAL");
             st.execute("PRAGMA foreign_keys=ON");
-            st.execute("PRAGMA cache_size=-4000");    // 4 MB page cache
+            // 4 MB was far too small once the DB grows into the hundreds-of-MB range —
+            // a full scan of tool_events (e.g. `analyze`'s own GROUP BY manifest_key)
+            // became genuinely disk/IO-bound: a thread dump against a real 530MB/134k-row
+            // instance caught it stuck in NativeDB.step at 100% CPU for 90s+ on that one
+            // query. 64 MB in-process page cache plus a 256 MB mmap (lets the OS handle
+            // caching the rest of the file without consuming JVM heap) together.
+            st.execute("PRAGMA cache_size=-65536");   // 64 MB page cache
+            st.execute("PRAGMA mmap_size=268435456"); // 256 MB memory-mapped I/O
+            // Without this, SQLite's default busy_timeout is 0: a writer that finds the
+            // DB locked by another connection fails immediately with SQLITE_BUSY instead
+            // of waiting briefly and retrying. On a box where a long-running daemon also
+            // holds this DB open, any short-lived CLI command (EventLogScanner's insert,
+            // in particular) can race it for the single writer lock. 5s gives a real
+            // chance to succeed without making a genuinely stuck daemon look hung forever.
+            st.execute("PRAGMA busy_timeout=5000");
         }
     }
 
