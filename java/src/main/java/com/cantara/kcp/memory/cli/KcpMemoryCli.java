@@ -4,6 +4,7 @@ import com.cantara.kcp.memory.KcpMemoryDaemon;
 import com.cantara.kcp.memory.mcp.McpServer;
 import com.cantara.kcp.memory.mcp.UsageLogger;
 import com.cantara.kcp.memory.model.AgentSession;
+import com.cantara.kcp.memory.model.CommandPattern;
 import com.cantara.kcp.memory.model.ManifestQualityRecord;
 import com.cantara.kcp.memory.model.ManifestVersionRecord;
 import com.cantara.kcp.memory.model.SearchResult;
@@ -15,6 +16,7 @@ import com.cantara.kcp.memory.store.AgentSessionStore;
 import com.cantara.kcp.memory.store.EventStore;
 import com.cantara.kcp.memory.store.ManifestQualityStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
+import com.cantara.kcp.memory.store.PatternStore;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.store.ToolUsageStore;
 import com.cantara.kcp.memory.update.UpdateChecker;
@@ -32,6 +34,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
@@ -52,6 +55,7 @@ import java.util.concurrent.TimeUnit;
                 KcpMemoryCli.ListCmd.class,
                 KcpMemoryCli.StatsCmd.class,
                 KcpMemoryCli.AnalyzeCmd.class,
+                KcpMemoryCli.SuggestSkillCmd.class,
                 KcpMemoryCli.EventsCmd.class,
                 KcpMemoryCli.AgentsCmd.class,
                 KcpMemoryCli.McpCmd.class,
@@ -561,6 +565,139 @@ public class KcpMemoryCli implements Callable<Integer> {
             }
             System.out.println();
             return 0;
+        }
+
+        private static String truncate(String s, int max) {
+            if (s == null) return "?";
+            return s.length() <= max ? s : s.substring(0, max - 1) + "…";
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // suggest-skill — mine recurring command patterns as draft skill YAML
+    // ------------------------------------------------------------------
+    @Command(name = "suggest-skill",
+             description = "Mine recurring command patterns across sessions as draft skill YAML (#19)")
+    static class SuggestSkillCmd implements Callable<Integer> {
+
+        @Mixin
+        DbPathMixin dbOpt = new DbPathMixin();
+
+        @Option(names = {"--since"}, description = "Only consider events from the last N days (default: 30)", defaultValue = "30")
+        int sinceDays;
+
+        @Option(names = {"--min-occurrences"}, description = "Exclude patterns seen in fewer than N distinct sessions (default: 3)", defaultValue = "3")
+        int minSessions;
+
+        @Option(names = {"--limit"}, description = "Max candidate patterns to return (default: 20)", defaultValue = "20")
+        int limit;
+
+        @Option(names = {"--out"}, description = "Directory to write one <name>.yaml file per candidate into (default: print to stdout)")
+        String outDir;
+
+        @Override
+        public Integer call() throws Exception {
+            try (MemoryDatabase db = dbOpt.open()) {
+                // Ingest any new events before mining
+                new EventLogScanner(db).scan();
+
+                PatternStore store = new PatternStore(db);
+                List<CommandPattern> patterns = store.findRecurringCommands(sinceDays, minSessions, limit);
+
+                if (patterns.isEmpty()) {
+                    System.out.printf("[kcp-memory] no recurring command patterns in the last %d days " +
+                            "(min %d distinct sessions).%n", sinceDays, minSessions);
+                    return 0;
+                }
+
+                System.out.printf("[kcp-memory] %d candidate pattern(s) — last %d days, min %d sessions%n%n",
+                        patterns.size(), sinceDays, minSessions);
+
+                java.nio.file.Path outPath = null;
+                if (outDir != null && !outDir.isBlank()) {
+                    outPath = Path.of(outDir.replace("~", System.getProperty("user.home")));
+                    Files.createDirectories(outPath);
+                }
+
+                java.util.Set<String> usedNames = new java.util.HashSet<>();
+                for (CommandPattern p : patterns) {
+                    String name = uniqueSlug(p.command(), usedNames);
+                    String yaml = draftSkillYaml(name, p);
+
+                    if (outPath != null) {
+                        java.nio.file.Path file = outPath.resolve(name + ".yaml");
+                        Files.writeString(file, yaml);
+                        System.out.printf("  %-45s  %2dx across %d sessions  -> %s%n",
+                                truncate(p.command(), 45), p.occurrenceCount(), p.sessionCount(), file);
+                    } else {
+                        System.out.println(yaml);
+                    }
+                }
+
+                if (outPath == null) {
+                    System.out.println("Review each draft above, edit description/instructions, then commit as a skill.");
+                } else {
+                    System.out.println();
+                    System.out.println("Review each draft in " + outPath + ", edit description/instructions, then commit.");
+                }
+                return 0;
+            }
+        }
+
+        private String draftSkillYaml(String name, CommandPattern p) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("# Draft generated by kcp-memory suggest-skill\n");
+            sb.append(String.format("# Pattern: \"%s\" appeared %d time%s across %d session%s%n",
+                    truncate(p.command(), 60),
+                    p.occurrenceCount(), p.occurrenceCount() == 1 ? "" : "s",
+                    p.sessionCount(), p.sessionCount() == 1 ? "" : "s"));
+            sb.append("name: ").append(name).append('\n');
+            sb.append("description: \"TODO — recurring command pattern, seen ")
+              .append(p.occurrenceCount()).append(" times across ").append(p.sessionCount())
+              .append(" sessions. Describe when an agent should reach for this.\"\n");
+            sb.append("instructions: |\n");
+            sb.append("  TODO: explain when/why to use this pattern.\n");
+            sb.append("\n");
+            sb.append("  ```bash\n");
+            sb.append("  ").append(p.command()).append('\n');
+            sb.append("  ```\n");
+            sb.append('\n');
+            List<String> ids = p.sessionIds();
+            String shownIds = ids.size() <= 3
+                    ? String.join(", ", ids)
+                    : String.join(", ", ids.subList(0, 3)) + ", +" + (ids.size() - 3) + " more";
+            sb.append("  Seen in sessions: ").append(shownIds).append('\n');
+            sb.append("  First seen: ").append(p.firstSeen()).append("   Last seen: ").append(p.lastSeen()).append('\n');
+            return sb.toString();
+        }
+
+        /** Slugify a command into a skill name; disambiguate collisions with -2, -3, etc. */
+        private String uniqueSlug(String command, java.util.Set<String> used) {
+            String base = slugify(command);
+            String candidate = base;
+            int n = 2;
+            while (!used.add(candidate)) {
+                candidate = base + "-" + n++;
+            }
+            return candidate;
+        }
+
+        private String slugify(String command) {
+            List<String> significant = new ArrayList<>();
+            for (String token : command.trim().split("\\s+")) {
+                if (significant.size() >= 5) break;
+                if (token.matches("^[A-Za-z_][A-Za-z0-9_]*=.*")) continue; // skip FOO=bar env assignments
+                significant.add(token);
+            }
+            String joined = significant.isEmpty() ? command : String.join(" ", significant);
+            String slug = joined.toLowerCase()
+                    .replaceAll("[^a-z0-9]+", "-")
+                    .replaceAll("^-+|-+$", "");
+            if (slug.length() > 40) {
+                slug = slug.substring(0, 40).replaceAll("-+$", "");
+            }
+            if (slug.isBlank()) slug = "recurring-command";
+            return slug + "-pattern";
         }
 
         private static String truncate(String s, int max) {
