@@ -21,6 +21,19 @@ import java.util.Map;
  */
 public class ManifestQualityStore {
 
+    /**
+     * SUPPRESSED and FILTER:* are kcp-commands markers, not authored skill manifests.
+     * Excluding them at the SQL level — not just filtering the output afterward —
+     * matters a lot in practice: on a real instance, SUPPRESSED alone was over half
+     * of all tool_events (74k of 134k rows), and the retry/help self-joins below took
+     * tens of minutes once they had to process that many rows for one key (a thread
+     * dump caught `analyze` stuck at 100% CPU in the retry query's ResultSet.next()).
+     * Same fix as kcp-memory#68's ManifestEditProposalStore; see also #67 (unrelated
+     * WAL-growth finding on the same instance).
+     */
+    private static final String NON_SKILL_KEY_EXCLUSION = "manifest_key != 'SUPPRESSED' AND manifest_key NOT LIKE 'FILTER:%'";
+    private static final String NON_SKILL_KEY_EXCLUSION_E1 = "e1.manifest_key != 'SUPPRESSED' AND e1.manifest_key NOT LIKE 'FILTER:%'";
+
     private final MemoryDatabase db;
 
     public ManifestQualityStore(MemoryDatabase db) {
@@ -49,9 +62,10 @@ public class ManifestQualityStore {
                 FROM tool_events
                 WHERE manifest_key IS NOT NULL
                   AND event_ts >= %s
+                  AND %s
                 GROUP BY manifest_key
                 HAVING cnt >= ?
-                """.formatted(cutoff);
+                """.formatted(cutoff, NON_SKILL_KEY_EXCLUSION);
 
         try (PreparedStatement ps = conn.prepareStatement(totalSql)) {
             ps.setInt(1, minCalls);
@@ -76,8 +90,9 @@ public class ManifestQualityStore {
                     AND (julianday(e2.event_ts) - julianday(e1.event_ts)) * 86400 <= 90
                 WHERE e1.manifest_key IS NOT NULL
                   AND e1.event_ts >= %s
+                  AND %s
                 GROUP BY e1.manifest_key
-                """.formatted(cutoff);
+                """.formatted(cutoff, NON_SKILL_KEY_EXCLUSION_E1);
 
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(retrySql)) {
@@ -98,8 +113,9 @@ public class ManifestQualityStore {
                     AND (julianday(e2.event_ts) - julianday(e1.event_ts)) * 86400 <= 300
                 WHERE e1.manifest_key IS NOT NULL
                   AND e1.event_ts >= %s
+                  AND %s
                 GROUP BY e1.manifest_key
-                """.formatted(cutoff);
+                """.formatted(cutoff, NON_SKILL_KEY_EXCLUSION_E1);
 
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(helpSql)) {
@@ -115,6 +131,7 @@ public class ManifestQualityStore {
                 FROM tool_events
                 WHERE manifest_key IS NOT NULL
                   AND event_ts >= %s
+                  AND %s
                   AND output_preview IS NOT NULL
                   AND (
                       LOWER(output_preview) LIKE 'error%%'
@@ -127,7 +144,7 @@ public class ManifestQualityStore {
                       OR LOWER(output_preview) LIKE '%%exited with%%'
                   )
                 GROUP BY manifest_key
-                """.formatted(cutoff);
+                """.formatted(cutoff, NON_SKILL_KEY_EXCLUSION);
 
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(errorSql)) {
@@ -192,10 +209,11 @@ public class ManifestQualityStore {
                 FROM tool_events
                 WHERE manifest_key IS NOT NULL
                   AND event_ts >= %s
+                  AND %s
                 GROUP BY manifest_key, mv
                 HAVING cnt >= ?
                 ORDER BY manifest_key, first_seen
-                """.formatted(cutoff);
+                """.formatted(cutoff, NON_SKILL_KEY_EXCLUSION);
 
         try (PreparedStatement ps = conn.prepareStatement(totalSql)) {
             ps.setInt(1, minCalls);
@@ -225,8 +243,9 @@ public class ManifestQualityStore {
                     AND (julianday(e2.event_ts) - julianday(e1.event_ts)) * 86400 <= 90
                 WHERE e1.manifest_key IS NOT NULL
                   AND e1.event_ts >= %s
+                  AND %s
                 GROUP BY e1.manifest_key, mv
-                """.formatted(cutoff);
+                """.formatted(cutoff, NON_SKILL_KEY_EXCLUSION_E1);
 
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(retrySql)) {
@@ -249,8 +268,9 @@ public class ManifestQualityStore {
                     AND (julianday(e2.event_ts) - julianday(e1.event_ts)) * 86400 <= 300
                 WHERE e1.manifest_key IS NOT NULL
                   AND e1.event_ts >= %s
+                  AND %s
                 GROUP BY e1.manifest_key, mv
-                """.formatted(cutoff);
+                """.formatted(cutoff, NON_SKILL_KEY_EXCLUSION_E1);
 
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(helpSql)) {
@@ -267,6 +287,7 @@ public class ManifestQualityStore {
                 FROM tool_events
                 WHERE manifest_key IS NOT NULL
                   AND event_ts >= %s
+                  AND %s
                   AND output_preview IS NOT NULL
                   AND (
                       LOWER(output_preview) LIKE 'error%%'
@@ -279,7 +300,7 @@ public class ManifestQualityStore {
                       OR LOWER(output_preview) LIKE '%%exited with%%'
                   )
                 GROUP BY manifest_key, mv
-                """.formatted(cutoff);
+                """.formatted(cutoff, NON_SKILL_KEY_EXCLUSION);
 
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(errorSql)) {
@@ -312,20 +333,21 @@ public class ManifestQualityStore {
         return records;
     }
 
-    /** Total number of distinct manifest keys in the events table. */
+    /** Total number of distinct manifest keys in the events table (excludes SUPPRESSED/FILTER:*). */
     public int countManifests() throws SQLException {
         try (Statement st = db.getConnection().createStatement();
              ResultSet rs = st.executeQuery(
-                     "SELECT COUNT(DISTINCT manifest_key) FROM tool_events WHERE manifest_key IS NOT NULL")) {
+                     "SELECT COUNT(DISTINCT manifest_key) FROM tool_events WHERE manifest_key IS NOT NULL AND "
+                             + NON_SKILL_KEY_EXCLUSION)) {
             return rs.next() ? rs.getInt(1) : 0;
         }
     }
 
-    /** Total events with a manifest key. */
+    /** Total events with a manifest key (excludes SUPPRESSED/FILTER:*). */
     public long countManifestCalls() throws SQLException {
         try (Statement st = db.getConnection().createStatement();
              ResultSet rs = st.executeQuery(
-                     "SELECT COUNT(*) FROM tool_events WHERE manifest_key IS NOT NULL")) {
+                     "SELECT COUNT(*) FROM tool_events WHERE manifest_key IS NOT NULL AND " + NON_SKILL_KEY_EXCLUSION)) {
             return rs.next() ? rs.getLong(1) : 0;
         }
     }
