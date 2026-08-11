@@ -5,6 +5,7 @@ import com.cantara.kcp.memory.mcp.McpServer;
 import com.cantara.kcp.memory.mcp.UsageLogger;
 import com.cantara.kcp.memory.model.AgentSession;
 import com.cantara.kcp.memory.model.CommandPattern;
+import com.cantara.kcp.memory.model.ManifestEditProposal;
 import com.cantara.kcp.memory.model.ManifestQualityRecord;
 import com.cantara.kcp.memory.model.ManifestVersionRecord;
 import com.cantara.kcp.memory.model.SearchResult;
@@ -14,6 +15,7 @@ import com.cantara.kcp.memory.scanner.EventLogScanner;
 import com.cantara.kcp.memory.scanner.SessionScanner;
 import com.cantara.kcp.memory.store.AgentSessionStore;
 import com.cantara.kcp.memory.store.EventStore;
+import com.cantara.kcp.memory.store.ManifestEditProposalStore;
 import com.cantara.kcp.memory.store.ManifestQualityStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.PatternStore;
@@ -444,6 +446,18 @@ public class KcpMemoryCli implements Callable<Integer> {
         @Option(names = {"--by-version"}, description = "Group results by manifest version (content hash) to compare before/after improvements")
         boolean byVersion;
 
+        @Option(names = {"--propose"}, description = "Mine evidence-backed edit proposals instead of the summary table (#64) — inert output for human review, never an automatic edit")
+        boolean propose;
+
+        @Option(names = {"--propose-threshold"}, description = "Minimum quality score to propose a manifest for review (0-1, higher = worse; default: 0.15)", defaultValue = "0.15")
+        double proposeThreshold;
+
+        @Option(names = {"--propose-evidence"}, description = "Max session IDs to attach as evidence per proposal (default: 5)", defaultValue = "5")
+        int proposeEvidence;
+
+        @Option(names = {"--out"}, description = "With --propose: directory to write one <manifest-key>.yaml proposal file into (default: print to stdout)")
+        String outDir;
+
         @Override
         public Integer call() throws Exception {
             try (MemoryDatabase db = dbOpt.open()) {
@@ -453,6 +467,10 @@ public class KcpMemoryCli implements Callable<Integer> {
                 ManifestQualityStore store = new ManifestQualityStore(db);
                 int  totalManifests = store.countManifests();
                 long totalCalls     = store.countManifestCalls();
+
+                if (propose) {
+                    return callPropose(db);
+                }
 
                 if (byVersion) {
                     return callByVersion(store, totalManifests, totalCalls);
@@ -565,6 +583,74 @@ public class KcpMemoryCli implements Callable<Integer> {
             }
             System.out.println();
             return 0;
+        }
+
+        private int callPropose(MemoryDatabase db) throws Exception {
+            ManifestEditProposalStore proposalStore = new ManifestEditProposalStore(db);
+            List<ManifestEditProposal> proposals = proposalStore.proposeEdits(
+                    sinceDays, minCalls, proposeThreshold, proposeEvidence);
+
+            if (proposals.isEmpty()) {
+                System.out.printf("[kcp-memory] no manifests at or above quality score %.2f in the last %d days " +
+                        "(min %d calls).%n", proposeThreshold, sinceDays, minCalls);
+                return 0;
+            }
+
+            System.out.printf("[kcp-memory] %d evidence-backed proposal(s) — last %d days, score >= %.2f%n%n",
+                    proposals.size(), sinceDays, proposeThreshold);
+
+            java.nio.file.Path outPath = null;
+            if (outDir != null && !outDir.isBlank()) {
+                outPath = Path.of(outDir.replace("~", System.getProperty("user.home")));
+                Files.createDirectories(outPath);
+            }
+
+            for (ManifestEditProposal p : proposals) {
+                String yaml = proposalYaml(p);
+                if (outPath != null) {
+                    java.nio.file.Path file = outPath.resolve(p.manifestKey() + ".yaml");
+                    Files.writeString(file, yaml);
+                    System.out.printf("  %-25s  score=%.2f  %2d/%d sessions  -> %s%n",
+                            truncate(p.manifestKey(), 25), p.qualityScore(),
+                            p.affectedSessions(), p.totalSessions(), file);
+                } else {
+                    System.out.println(yaml);
+                }
+            }
+
+            if (outPath == null) {
+                System.out.println("Inert proposals — review each, edit the real skill/manifest YAML, and commit a new signed version.");
+            } else {
+                System.out.println();
+                System.out.println("Inert proposals in " + outPath + " — review each, edit the real skill/manifest YAML, and commit a new signed version.");
+            }
+            return 0;
+        }
+
+        private String proposalYaml(ManifestEditProposal p) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("# Draft edit proposal generated by kcp-memory analyze --propose (#64)\n");
+            sb.append(String.format("# Evidence: manifest \"%s\" showed %s in %d of %d sessions (last %d days)%n",
+                    p.manifestKey(), p.reason(), p.affectedSessions(), p.totalSessions(), sinceDays));
+            sb.append("manifest_key: ").append(p.manifestKey()).append('\n');
+            sb.append("proposal: |\n");
+            sb.append("  TODO: describe the specific change to make to this manifest/skill.\n");
+            sb.append("evidence:\n");
+            sb.append("  reason: \"").append(p.reason()).append("\"\n");
+            sb.append("  quality_score: ").append(String.format("%.2f", p.qualityScore())).append('\n');
+            sb.append("  total_calls: ").append(p.totalCalls()).append('\n');
+            sb.append("  total_sessions: ").append(p.totalSessions()).append('\n');
+            sb.append("  affected_sessions: ").append(p.affectedSessions()).append('\n');
+            sb.append("  retry_sessions: ").append(p.retrySessions()).append('\n');
+            sb.append("  help_sessions: ").append(p.helpSessions()).append('\n');
+            sb.append("  error_sessions: ").append(p.errorSessions()).append('\n');
+            sb.append("  sessions:\n");
+            for (String sid : p.evidenceSessionIds()) {
+                sb.append("    - ").append(sid).append('\n');
+            }
+            sb.append("generated_at: ").append(p.generatedAt()).append('\n');
+            sb.append("status: proposed  # never auto-applied — human review required, see knowledge-context-protocol#199\n");
+            return sb.toString();
         }
 
         private static String truncate(String s, int max) {
