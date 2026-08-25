@@ -26,7 +26,12 @@ You're in the right place if:
 
 ## Quick Start: Full Health Check
 
-Run this diagnostic script on the hub instance (EC2-A):
+Fastest single check (v0.36.0+): `kcp-memory status` — reports daemon up/down,
+version, session count, uptime, last-scan freshness, and OS-appropriate
+supervision state (`systemctl --user is-active kcp-memory` on Linux, `launchctl
+list` on macOS) in one call. Use it before reaching for the full script below.
+
+For the full diagnostic, run this on the hub instance (EC2-A):
 
 ```bash
 #!/bin/bash
@@ -76,6 +81,10 @@ echo "=== SSH tunnels ==="
 ps aux | grep 'ssh -N -L' | grep -v grep || echo "No active SSH tunnels"
 
 echo ""
+echo "=== systemd --user supervision ==="
+systemctl --user status kcp-memory --no-pager -l 2>&1 | head -5 || echo "not a systemd --user unit on this host"
+
+echo ""
 echo "=== Recent sync activity (last 10 events) ==="
 sqlite3 ~/.kcp/memory.db "
   SELECT timestamp, tool, source_instance, substr(event_hash, 1, 12) as hash
@@ -102,8 +111,10 @@ echo "Duplicate events: $DUPES"
 
 ```bash
 # Are the sync threads alive?
-# Look for peer sync log entries
-journalctl -u kcp-memory --since "5 minutes ago" | grep -i "peer\|sync\|tunnel"
+# Look for peer sync log entries. This is a systemd --user unit (installed
+# by bin/install.sh, #32) — omit --user only if you're on a host still
+# running the pre-supervision nohup fallback (check `kcp-memory status`).
+journalctl --user -u kcp-memory --since "5 minutes ago" | grep -i "peer\|sync\|tunnel"
 
 # Check cursor freshness — if updated_at is stale, sync has stalled
 sqlite3 ~/.kcp/memory.db "
@@ -125,7 +136,7 @@ ps aux | grep 'ssh -N -L' | grep -v grep
 
 # Test tunnel manually
 # Find the local port from logs:
-journalctl -u kcp-memory | grep "local port" | tail -1
+journalctl --user -u kcp-memory | grep "local port" | tail -1
 
 # Probe through the tunnel
 TUNNEL_PORT=<from-logs>
@@ -300,7 +311,7 @@ watch -n5 'sqlite3 ~/.kcp/memory.db "SELECT * FROM peer_cursors;" -header -colum
 | Events JSONL | `~/.kcp/events.jsonl` | - |
 | Captures | `~/.kcp/captures/` | - |
 | SSH tunnels | dynamic local port | varies |
-| Logs | journalctl -u kcp-memory | - |
+| Logs | `journalctl --user -u kcp-memory` (or `~/.kcp/daemon.log`) | - |
 
 | SQLite Table | Purpose |
 |-------------|---------|
@@ -320,4 +331,4 @@ watch -n5 'sqlite3 ~/.kcp/memory.db "SELECT * FROM peer_cursors;" -header -colum
 
 **Status:** draft | **Priority:** high
 **Tags:** #exocortex #infrastructure #kcp #debug #troubleshooting
-**Last Updated:** 2026-04-12
+**Last Updated:** 2026-08-25 (added `kcp-memory status`, fixed `journalctl --user` for #32/v0.36.0)

@@ -1,44 +1,39 @@
 # kcp-memory
 
-## Purpose
-Episodic memory for Claude Code. Indexes session transcripts and tool-call events into a local SQLite database, making past sessions searchable in milliseconds. Available as a CLI, HTTP API, and MCP server so Claude can query its own history inline.
+Episodic memory for Claude Code, Gemini CLI, and Codex CLI. Indexes session transcripts,
+subagent transcripts, and tool-call events into a local SQLite+FTS5 database, exposed via a
+CLI, an HTTP daemon (port 7735), and an MCP server so an agent can query its own history inline.
 
-## Tech Stack
-- Language: Java 21
-- Framework: Picocli (CLI), built-in Java HttpServer
-- Build: Maven
-- Key dependencies: SQLite JDBC, Picocli
-- Storage: SQLite with FTS5 full-text search
+## Start here
 
-## Architecture
-Three-layer memory model:
-- **Working memory:** Current context window (provided by Claude Code)
-- **Episodic memory:** Past session history (provided by kcp-memory)
-- **Semantic memory:** Codebase knowledge (provided by Synthesis)
+Read `knowledge.yaml` first — it's the canonical agent-navigable index of README, the
+three-layer memory model, and this repo's four governed operational skills. Query it the
+standard KCP way: `npx kcp-agent plan '<intent>' --manifest .`
 
-Daemon runs on port 7735, scans `~/.claude/projects/` for session transcripts, indexes them into SQLite with FTS5. Provides 11 MCP tools for inline session querying.
+## Skill conventions
 
-## Key Entry Points
-- `bin/install.sh` - Installation script
-- `java/` - Java source code
-- CLI: `kcp-memory search`, `kcp-memory scan`, `kcp-memory stats`
-- MCP tools: `kcp_memory_search`, `kcp_memory_events_search`, `kcp_memory_list`, `kcp_memory_stats`, `kcp_memory_session_detail`, `kcp_memory_project_context`, `kcp_memory_subagent_search`, `kcp_memory_session_tree`, `kcp_memory_analyze`, `kcp_memory_forget`, `kcp_memory_retention`
-- `knowledge.yaml` - KCP manifest
+Governed-skill authoring conventions — envelope shape, `action_scope` as a firewall rule, the
+skill/knowledge/policy split — live in [Cantara/kcp-skill](https://github.com/Cantara/kcp-skill)
+`PROFILE.md`. Read that before writing or reviewing any `kind: skill` unit here.
 
-## Development
-```bash
-# Install
-curl -fsSL https://raw.githubusercontent.com/Cantara/kcp-memory/main/bin/install.sh | bash
+## This repo's local skills
 
-# Build from source
-cd java && mvn clean install
+`.claude/skills/` holds ExoCortex fleet-operator procedures, not general kcp-memory usage:
+`exocortex-peer-setup` (`--peer` sync between instances), `exocortex-serve-setup` (`--serve`
+external API for mobile), `exocortex-debug` (diagnose sync/tunnel failures across nodes), and
+`exocortex-android-app` (the `kcp-sync-android` client that talks to `--serve`).
 
-# Scan sessions
-kcp-memory scan
+## Gotchas
 
-# Search
-kcp-memory search "OAuth implementation"
-```
-
-## Domain Context
-AI agent memory infrastructure. Part of the KCP ecosystem. Fills the episodic memory gap so Claude Code sessions can reference past decisions, debugging sessions, and context from previous conversations.
+- **README and `knowledge.yaml` are stale against the actual release**: both stop documenting
+  at v0.33.0 / `app_version: 0.34.0`, but the repo is at v0.37.1 — `kcp_memory_decisions`,
+  `suggest-skill`, `analyze --propose`, and daemon `--port`/`--db-path` are undocumented there,
+  and the MCP server now exposes 12 tools, not the 11 both docs claim. Check
+  `KcpMemoryCli.java` / `McpServer.java` for ground truth.
+- **The daemon now runs under process supervision by default** (`bin/install.sh`, #32): a
+  `systemd --user` unit on Linux, a launchd LaunchAgent on macOS — not the old session-scoped
+  `nohup`. `kcp-memory status` reports which. The shipped unit's `ExecStart` has no
+  `--peer`/`--serve` flags; adding them needs a `systemctl --user edit kcp-memory` drop-in.
+- **CLI binary is not on PATH** — invoke via the alias in the README
+  (`java --enable-native-access=ALL-UNNAMED -jar ~/.kcp/kcp-memory-daemon.jar`) or you'll get
+  "command not found".

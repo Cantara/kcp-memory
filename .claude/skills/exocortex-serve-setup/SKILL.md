@@ -111,9 +111,9 @@ export KCP_API_KEY=$(openssl rand -hex 32)
 echo "$KCP_API_KEY" > ~/.kcp/api-key
 chmod 600 ~/.kcp/api-key
 
-# Or set in environment for systemd
-# In /etc/systemd/system/kcp-memory.service:
-# Environment=KCP_API_KEY=<your-key>
+# Or, for the systemd --user unit (see Step 6), set it via the env file
+# it already loads instead of hand-editing the unit:
+# echo "KCP_API_KEY=$KCP_API_KEY" >> ~/.kcp/kcp.env
 ```
 
 ### Step 3: Start the external server
@@ -179,38 +179,51 @@ aws ec2 authorize-security-group-ingress \
   --cidr <your-ip>/32
 ```
 
-### Step 6: systemd service
+### Step 6: systemd service (as of daemon supervision, #32)
 
+`bin/install.sh` already installs a **user** unit (not system-wide) at
+`~/.config/systemd/user/kcp-memory.service`, with `ExecStart` fixed to plain
+`kcp-memory daemon` — no `--peer`/`--serve`/TLS flags. Two ways to add them:
+
+**Option A — env vars only** (works for `--port`, `--db-path`, `--api-key`,
+which read `KCP_MEMORY_PORT`/`KCP_MEMORY_DB`/`KCP_API_KEY`):
+```bash
+cat >> ~/.kcp/kcp.env << 'EOF'
+KCP_API_KEY=your-key-here
+EOF
+# EnvironmentFile=-%h/.kcp/kcp.env is already wired into the shipped unit.
+```
+
+**Option B — drop-in override** (required for `--peer`/`--serve`/`--tls-*`,
+which have no env-var equivalent — CLI flags only):
+```bash
+systemctl --user edit kcp-memory
+```
+This opens an editor for an override file
+(`~/.config/systemd/user/kcp-memory.service.d/override.conf`). Blank the
+inherited `ExecStart` first, then set the full command:
 ```ini
-# /etc/systemd/system/kcp-memory.service
-[Unit]
-Description=kcp-memory ExoCortex daemon
-After=network.target
-
 [Service]
-Type=simple
-User=ec2-user
-Environment=KCP_API_KEY=<your-key>
-ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED \
-  -jar /home/ec2-user/.kcp/kcp-memory-daemon.jar daemon \
+ExecStart=
+ExecStart=/usr/bin/env java --enable-native-access=ALL-UNNAMED \
+  -jar %h/.kcp/kcp-memory-daemon.jar daemon \
   --peer ssh://ec2-user@ec2-b.internal \
   --serve 0.0.0.0:8443 \
-  --tls-cert /home/ec2-user/.kcp/keystore.p12 \
+  --tls-cert %h/.kcp/keystore.p12 \
   --tls-key changeit \
-  --capture-dir /home/ec2-user/.kcp/captures \
+  --capture-dir %h/.kcp/captures \
   --synthesis-cmd "synthesis search"
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable kcp-memory
-sudo systemctl start kcp-memory
-sudo journalctl -u kcp-memory -f
+systemctl --user daemon-reload
+systemctl --user restart kcp-memory
+journalctl --user -u kcp-memory -f
 ```
+
+No `sudo` involved anywhere in this flow — it's a per-user unit, started via
+`systemctl --user`, which is also what `kcp-memory status` checks
+(`systemctl --user is-active kcp-memory`) to report supervision state.
 
 ## Troubleshooting
 
@@ -308,4 +321,4 @@ on separate ports.
 
 **Status:** draft | **Priority:** high
 **Tags:** #exocortex #infrastructure #kcp #mobile #tls #api
-**Last Updated:** 2026-04-12
+**Last Updated:** 2026-08-25 (systemd --user supervision corrected for #60/v0.36.0)
