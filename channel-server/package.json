@@ -1,0 +1,9 @@
+{
+  "name": "kcp-channel",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "kcp-channel.ts",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.0"
+  }
+}
