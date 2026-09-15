@@ -124,6 +124,40 @@ public class AgentSessionStore {
         }
     }
 
+    /** Return a single agent session by its agent_id, or null if not found. */
+    public AgentSession getById(String agentId) throws SQLException {
+        String sql = """
+                SELECT agent_id, parent_session_id, agent_slug, project_dir,
+                       cwd, model, turn_count, tool_call_count, tool_names,
+                       first_message, all_user_text,
+                       first_seen_at, last_updated_at, message_count
+                FROM agent_sessions WHERE agent_id = ?
+                """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, agentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<AgentSession> results = mapResults(rs);
+                return results.isEmpty() ? null : results.get(0);
+            }
+        }
+    }
+
+    /**
+     * True if the given parent session has at least one indexed subagent.
+     * Used by the navigation tools to decide whether a session path is a
+     * "directory" (has children to list) or a "file" (leaf). Cheap: backed
+     * by {@code idx_agent_sessions_parent}.
+     */
+    public boolean hasChildren(String parentSessionId) throws SQLException {
+        String sql = "SELECT 1 FROM agent_sessions WHERE parent_session_id = ? LIMIT 1";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, parentSessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
     /** List agent sessions for a given parent session, newest first. */
     public List<AgentSession> listByParent(String parentSessionId, int limit) throws SQLException {
         String sql = """
