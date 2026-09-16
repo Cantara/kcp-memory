@@ -80,6 +80,17 @@ public class EventStore {
         return results;
     }
 
+    /** Fetch a single event by its row id, or null if not found. */
+    public ToolEvent getById(long id) throws SQLException {
+        String sql = "SELECT * FROM tool_events WHERE id = ?";
+        try (PreparedStatement ps = db.getConnection().prepareStatement(sql)) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? mapRow(rs) : null;
+            }
+        }
+    }
+
     /** Total number of indexed events. */
     public long count() throws SQLException {
         try (Statement st = db.getConnection().createStatement();
