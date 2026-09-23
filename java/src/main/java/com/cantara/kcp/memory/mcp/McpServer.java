@@ -71,9 +71,11 @@ public class McpServer {
 
     private final ObjectMapper   mapper = new ObjectMapper();
     private final MemoryDatabase db;
+    private final DecisionScanner decisionScanner;
 
     public McpServer(MemoryDatabase db) {
         this.db = db;
+        this.decisionScanner = new DecisionScanner(db);
     }
 
     /** Block on stdin until EOF, processing one JSON-RPC message per line. */
@@ -82,7 +84,7 @@ public class McpServer {
         new SessionScanner(db).scan(false);
         new EventLogScanner(db).scan();
         new AgentSessionScanner(db).scan(false);
-        new DecisionScanner(db).scan();
+        decisionScanner.scan();
 
         // stdout = protocol; auto-flush so responses are sent immediately
         PrintWriter    out = new PrintWriter(System.out, true);
@@ -784,6 +786,10 @@ public class McpServer {
         if (query.isEmpty() && (type == null || type.isBlank()) && (domain == null || domain.isBlank())) {
             return "Error: query, type, or domain required";
         }
+
+        // Pick up decision files written/edited since startup (cheap: mtime fingerprint,
+        // re-indexes only projects whose files changed).
+        decisionScanner.rescanIfChanged();
 
         DecisionStore store = new DecisionStore(db);
         List<Decision> results;

@@ -26,6 +26,13 @@ public class DecisionStore {
      * Insert or update a decision (upsert by decision_id + project_path).
      */
     public void upsert(Decision d) throws SQLException {
+        upsert(d, d.projectPath() + "/.sdd/decisions/index.yaml");
+    }
+
+    /**
+     * Insert or update a decision, recording the YAML file it was read from.
+     */
+    public void upsert(Decision d, String filePath) throws SQLException {
         String sql = """
                 INSERT INTO decisions
                   (decision_id, type, domain, what, why, alternatives, learned, updated,
@@ -54,7 +61,7 @@ public class DecisionStore {
             ps.setString(8, d.updated());
             ps.setString(9, toJson(d.tags()));
             ps.setString(10, d.projectPath());
-            ps.setString(11, d.projectPath() + "/.sdd/decisions/index.yaml");  // file_path
+            ps.setString(11, filePath);
             ps.executeUpdate();
         }
     }
