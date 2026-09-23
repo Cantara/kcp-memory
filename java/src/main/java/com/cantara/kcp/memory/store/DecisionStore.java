@@ -5,9 +5,15 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * CRUD operations for the decisions table.
@@ -155,6 +161,90 @@ public class DecisionStore {
             }
         }
         return results;
+    }
+
+    // ------------------------------------------------------------------
+    // Checkout-collapsed queries
+    // ------------------------------------------------------------------
+
+    /**
+     * A decision hit, collapsed across checkouts of the same repository.
+     *
+     * @param decision      the representative copy (preferred checkout, see {@link #checkoutRank})
+     * @param otherProjects project paths of the other checkouts holding an identical record
+     */
+    public record DecisionHit(Decision decision, List<String> otherProjects) {
+        public DecisionHit {
+            otherProjects = List.copyOf(otherProjects);
+        }
+    }
+
+    /**
+     * Full-text search, collapsing identical records that exist in several checkouts of the same
+     * repository (clones, git worktrees, .claude/worktrees/*) into one hit.
+     * Records are identical when {@code decision_id}, {@code what} and {@code why} all match;
+     * an edited version of the same id on another branch stays a separate hit.
+     *
+     * @param type   optional type filter (null/blank = any)
+     * @param domain optional domain filter (null/blank = any)
+     */
+    public List<DecisionHit> searchCollapsed(String query, String type, String domain, int limit)
+            throws SQLException {
+        List<Decision> raw = search(query, overfetch(limit)).stream()
+                .filter(d -> type == null || type.isBlank() || type.equals(d.type()))
+                .filter(d -> domain == null || domain.isBlank() || domain.equals(d.domain()))
+                .toList();
+        return collapse(raw, limit);
+    }
+
+    /** Type/domain filter with the same checkout collapsing as {@link #searchCollapsed}. */
+    public List<DecisionHit> filterCollapsed(String type, String domain, int limit) throws SQLException {
+        return collapse(filter(type, domain, overfetch(limit)), limit);
+    }
+
+    /** Duplicates can outnumber distinct records many times over — fetch enough to fill {@code limit}. */
+    private static int overfetch(int limit) {
+        return Math.max(limit * 50, 500);
+    }
+
+    /**
+     * Collapse identical records, keeping the order of each group's best-ranked member and using
+     * the preferred checkout as the representative.
+     */
+    public static List<DecisionHit> collapse(List<Decision> ranked, int limit) {
+        Map<List<String>, List<Decision>> groups = new LinkedHashMap<>();
+        for (Decision d : ranked) {
+            groups.computeIfAbsent(List.of(d.id(), d.what(), d.why()), k -> new ArrayList<>()).add(d);
+        }
+        List<DecisionHit> hits = new ArrayList<>();
+        for (List<Decision> group : groups.values()) {
+            if (hits.size() >= limit) break;
+            List<Decision> sorted = new ArrayList<>(group);
+            sorted.sort(Comparator.comparingInt((Decision d) -> checkoutRank(d.projectPath()))
+                    .thenComparingInt(d -> d.projectPath().length())
+                    .thenComparing(Decision::projectPath));
+            List<String> others = new ArrayList<>();
+            for (Decision d : sorted.subList(1, sorted.size())) {
+                if (!others.contains(d.projectPath())) others.add(d.projectPath());
+            }
+            hits.add(new DecisionHit(sorted.get(0), others));
+        }
+        return hits;
+    }
+
+    /**
+     * Lower is more canonical: 0 = main checkout, +1 = linked git worktree ({@code .git} is a file),
+     * +2 = under a {@code .claude/worktrees/} directory.
+     */
+    static int checkoutRank(String projectPath) {
+        int rank = 0;
+        if (projectPath.replace('\\', '/').contains("/.claude/worktrees/")) rank += 2;
+        try {
+            if (Files.isRegularFile(Path.of(projectPath, ".git"))) rank += 1;
+        } catch (InvalidPathException ignored) {
+            // leave rank as is
+        }
+        return rank;
     }
 
     /**

@@ -792,25 +792,12 @@ public class McpServer {
         decisionScanner.rescanIfChanged();
 
         DecisionStore store = new DecisionStore(db);
-        List<Decision> results;
 
-        // If query is provided, use FTS search; otherwise filter by type/domain
-        if (!query.isEmpty()) {
-            results = store.search(query, limit);
-            // Further filter by type/domain if provided
-            if ((type != null && !type.isBlank()) || (domain != null && !domain.isBlank())) {
-                String finalType = type;
-                String finalDomain = domain;
-                results = results.stream()
-                        .filter(d -> (finalType == null || finalType.isBlank() || d.type().equals(finalType)))
-                        .filter(d -> (finalDomain == null || finalDomain.isBlank() || d.domain().equals(finalDomain)))
-                        .limit(limit)
-                        .toList();
-            }
-        } else {
-            // No query, just filter
-            results = store.filter(type, domain, limit);
-        }
+        // If query is provided, use FTS search; otherwise filter by type/domain.
+        // Identical records from several checkouts of one repo (clones, worktrees) collapse to one hit.
+        List<DecisionStore.DecisionHit> results = !query.isEmpty()
+                ? store.searchCollapsed(query, type, domain, limit)
+                : store.filterCollapsed(type, domain, limit);
 
         UsageLogger.logDecisionQuery(query, type, domain, results.size());
 
@@ -822,7 +809,8 @@ public class McpServer {
         StringBuilder sb = new StringBuilder();
         sb.append(results.size()).append(" decision(s) found:\n\n");
 
-        for (Decision d : results) {
+        for (DecisionStore.DecisionHit hit : results) {
+            Decision d = hit.decision();
             sb.append("## ").append(d.id()).append("\n");
             sb.append("**Type**: ").append(d.type()).append("  |  ");
             sb.append("**Domain**: ").append(d.domain()).append("\n");
@@ -846,6 +834,10 @@ public class McpServer {
             }
 
             sb.append("**Project**: ").append(d.projectPath()).append("\n");
+            if (!hit.otherProjects().isEmpty()) {
+                sb.append("(also in ").append(hit.otherProjects().size())
+                  .append(" other checkout(s))\n");
+            }
             sb.append("\n");
         }
 
