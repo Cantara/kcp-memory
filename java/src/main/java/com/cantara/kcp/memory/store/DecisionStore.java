@@ -151,6 +151,43 @@ public class DecisionStore {
     }
 
     /**
+     * Fetch a single decision by its decision_id. The same decision_id can
+     * exist under different project_path rows (upsert key is
+     * decision_id+project_path); when that happens this returns the most
+     * recently scanned match rather than failing — callers that need a
+     * specific project's copy should use {@link #filter} instead.
+     *
+     * @return the decision, or null if no row has this decision_id
+     */
+    public Decision getById(String decisionId) throws SQLException {
+        String sql = """
+                SELECT decision_id, type, domain, what, why, alternatives, learned, updated,
+                       tags, project_path
+                FROM decisions WHERE decision_id = ?
+                ORDER BY scanned_at DESC
+                LIMIT 1
+                """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, decisionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return new Decision(
+                        rs.getString("decision_id"),
+                        rs.getString("type"),
+                        rs.getString("domain"),
+                        rs.getString("what"),
+                        rs.getString("why"),
+                        fromJsonList(rs.getString("alternatives")),
+                        rs.getString("learned"),
+                        rs.getString("updated"),
+                        fromJsonList(rs.getString("tags")),
+                        rs.getString("project_path")
+                );
+            }
+        }
+    }
+
+    /**
      * Get total count of indexed decisions.
      */
     public int count() throws SQLException {
