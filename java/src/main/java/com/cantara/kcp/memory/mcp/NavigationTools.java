@@ -248,10 +248,15 @@ public class NavigationTools {
         return renderEventDetail(e);
     }
 
-    private String readSubagent(List<String> segs) throws SQLException {
+    private String readSubagent(List<String> segs) throws Exception {
         if (segs.size() < 2) throw new NavNotFoundException("/subagents is a directory. Use kcp_memory_ls.");
         AgentSession a = new AgentSessionStore(db).getById(segs.get(1));
         if (a == null) throw new NavNotFoundException("No such subagent: " + segs.get(1));
+        // /subagents/<id> is a flat alias for /sessions/<parent>/<id> (see class javadoc) — it
+        // must enforce the same governance gate that path does, not just the same query.
+        String denied = McpServer.governanceDenialReason(new SessionStore(db), a.getParentSessionId());
+        if (denied != null)
+            throw new NavNotFoundException("Subagent " + segs.get(1) + "'s parent session is not accessible: " + denied);
         return renderAgentDetail(a);
     }
 
@@ -375,7 +380,7 @@ public class NavigationTools {
         return List.of(new Entry(String.valueOf(e.id()), "/events/" + e.id(), "file", oneLineEvent(e)));
     }
 
-    private List<Entry> lsSubagents(List<String> segs, int limit) throws SQLException {
+    private List<Entry> lsSubagents(List<String> segs, int limit) throws Exception {
         AgentSessionStore store = new AgentSessionStore(db);
         if (segs.size() == 1) {
             new AgentSessionScanner(db).scan(false);
@@ -387,6 +392,12 @@ public class NavigationTools {
         }
         AgentSession a = store.getById(segs.get(1));
         if (a == null) throw new NavNotFoundException("No such subagent: " + segs.get(1));
+        // Same governance gate as readSubagent — ls on this leaf path must not reveal even the
+        // one-line summary (it includes a truncated task-text snippet) of a forgotten session's
+        // subagent.
+        String denied = McpServer.governanceDenialReason(new SessionStore(db), a.getParentSessionId());
+        if (denied != null)
+            throw new NavNotFoundException("Subagent " + segs.get(1) + "'s parent session is not accessible: " + denied);
         return List.of(new Entry(a.getAgentId(), "/subagents/" + a.getAgentId(), "file", oneLineAgent(a)));
     }
 

@@ -210,6 +210,53 @@ class NavigationToolsTest {
         assertTrue(result.contains("Subtask: find auth code"), result);
     }
 
+    // ------------------------------------------------------------------
+    // Governance gate — /subagents/<id> is documented as a flat alias for
+    // /sessions/<parent>/<id> (NavigationTools class javadoc) and must enforce
+    // the exact same forget/governance gate that path does, not just the same
+    // query. Covers both the alias's read() and ls() leaf paths, plus the
+    // sibling path they alias, so a future regression on either side is caught.
+    // ------------------------------------------------------------------
+
+    @Test
+    void readSessionSubagentIsGovernanceGatedWhenParentForgotten() throws Exception {
+        new SessionStore(db).forget("sess-aaa111", "user asked to forget");
+
+        ObjectNode a = args();
+        a.put("path", "/sessions/sess-aaa111/agent-001");
+        String result = nav.read(a);
+
+        assertFalse(result.contains("Subtask: find auth code"),
+                "forgotten parent's subagent content must not leak through /sessions/<id>/<agentId>: " + result);
+        assertTrue(result.contains("not accessible"), result);
+    }
+
+    @Test
+    void readSubagentAliasPathIsGovernanceGatedWhenParentForgotten() throws Exception {
+        new SessionStore(db).forget("sess-aaa111", "user asked to forget");
+
+        ObjectNode a = args();
+        a.put("path", "/subagents/agent-001");
+        String result = nav.read(a);
+
+        assertFalse(result.contains("Subtask: find auth code"),
+                "forgotten parent's subagent content must not leak through the /subagents alias path: " + result);
+        assertTrue(result.contains("not accessible"), result);
+    }
+
+    @Test
+    void lsSubagentsLeafIsGovernanceGatedWhenParentForgotten() throws Exception {
+        new SessionStore(db).forget("sess-aaa111", "user asked to forget");
+
+        ObjectNode a = args();
+        a.put("path", "/subagents/agent-001");
+        String result = nav.ls(a);
+
+        assertFalse(result.contains("find auth code"),
+                "forgotten parent's subagent summary must not leak through kcp_memory_ls on the alias path: " + result);
+        assertTrue(result.contains("not accessible"), result);
+    }
+
     @Test
     void readDecisionDetailReturnsFullContent() throws Exception {
         ObjectNode a = args();
