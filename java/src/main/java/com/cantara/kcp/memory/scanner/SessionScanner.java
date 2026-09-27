@@ -30,6 +30,8 @@ public class SessionScanner {
             Path.of(System.getProperty("user.home"), ".gemini", "tmp");
     private static final Path DEFAULT_CODEX_SESSIONS =
             Path.of(System.getProperty("user.home"), ".codex", "sessions");
+    private static final Path DEFAULT_PI_SESSIONS =
+            Path.of(System.getProperty("user.home"), ".pi", "agent", "sessions");
 
     private final List<Path> roots;
     private final SessionParser parser;
@@ -37,7 +39,7 @@ public class SessionScanner {
     private final ToolUsageStore toolUsageStore;
 
     public SessionScanner(MemoryDatabase db) {
-        this(List.of(DEFAULT_CLAUDE_PROJECTS, DEFAULT_GEMINI_TMP, DEFAULT_CODEX_SESSIONS), db);
+        this(List.of(DEFAULT_CLAUDE_PROJECTS, DEFAULT_GEMINI_TMP, DEFAULT_CODEX_SESSIONS, DEFAULT_PI_SESSIONS), db);
     }
 
     public SessionScanner(Path root, MemoryDatabase db) {
@@ -144,6 +146,11 @@ public class SessionScanner {
             return name.startsWith("session-")
                     && name.endsWith(".json")
                     && file.toString().contains(FileSystems.getDefault().getSeparator() + "chats" + FileSystems.getDefault().getSeparator());
+        }
+        // Check before the generic "sessions" match below — .pi/agent/sessions also
+        // ends with "sessions", but pi filenames aren't rollout-prefixed like Codex's.
+        if (root.endsWith(Path.of("agent", "sessions"))) {
+            return name.endsWith(".jsonl");
         }
         if (root.endsWith("sessions")) {
             return name.startsWith("rollout-") && name.endsWith(".jsonl");

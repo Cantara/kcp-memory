@@ -35,6 +35,9 @@ public class SessionParser {
             if (isGeminiSession(sessionPath)) {
                 return parseGemini(sessionPath, slug, body);
             }
+            if (isPiSession(body)) {
+                return parsePi(sessionPath, slug, body);
+            }
             if (isCodexSession(sessionPath, body)) {
                 return parseCodex(sessionPath, slug, body);
             }
@@ -196,12 +199,84 @@ public class SessionParser {
         return Optional.of(acc.toResult());
     }
 
+    private Optional<ParseResult> parsePi(Path path, String slug, String body) {
+        SessionAccumulator acc = new SessionAccumulator(defaultSessionId(path), slug, path);
+        String modelChangeFallback = null;
+
+        // Like the other formats above, this walks every record in file order and does
+        // not reconstruct branches from parentId (pi supports --fork/--resume, which can
+        // leave abandoned branches in the same file). Turn/tool counts are a superset
+        // across all branches, not just the active one.
+        for (String rawLine : body.split("\\R")) {
+            String line = rawLine.trim();
+            if (line.isEmpty()) continue;
+
+            JsonNode node = readJson(line);
+            if (node == null) continue;
+
+            String type = text(node, "type");
+            String ts = text(node, "timestamp");
+            acc.captureTimestamp(ts);
+
+            if ("session".equals(type)) {
+                if (node.has("id")) acc.sessionId = node.get("id").asText();
+                if (node.has("cwd")) acc.projectDir = node.get("cwd").asText();
+                continue;
+            }
+            if ("model_change".equals(type)) {
+                // Fallback only — an assistant message's own "model" field (below) is the
+                // more descriptive, resolved name and always wins when the session has one.
+                // Keep the latest model_change, not the first: a session can switch models
+                // mid-conversation and then end before any assistant message reports one.
+                if (node.has("modelId")) {
+                    modelChangeFallback = node.get("modelId").asText();
+                }
+                continue;
+            }
+            if (!"message".equals(type)) continue;
+
+            JsonNode message = node.path("message");
+            String role = text(message, "role");
+
+            if ("user".equals(role)) {
+                acc.addUserText(extractTextBlocks(message.path("content")));
+            } else if ("assistant".equals(role)) {
+                if (acc.model == null && message.has("model")) {
+                    acc.model = message.get("model").asText();
+                }
+                JsonNode content = message.path("content");
+                if (content.isArray()) {
+                    for (JsonNode block : content) {
+                        if ("toolCall".equals(text(block, "type"))) {
+                            String toolName = block.has("name") ? block.get("name").asText() : "unknown";
+                            String toolInput = block.has("arguments") ? block.get("arguments").toString() : null;
+                            acc.addTool(toolName, toolInput, ts);
+                        }
+                    }
+                }
+                acc.turnCount++;
+            }
+            // role "toolResult" and "system" carry no independent turn/tool-call signal —
+            // the matching toolCall block on the assistant message already counted it.
+        }
+
+        if (acc.model == null) acc.model = modelChangeFallback;
+        if (acc.projectDir == null) acc.projectDir = slug;
+        return Optional.of(acc.toResult());
+    }
+
     private ParseResult emptyResult(String sessionId, String slug, Path path) {
         return new SessionAccumulator(sessionId, slug, path).toResult();
     }
 
     private boolean isGeminiSession(Path path) {
         return path.getFileName().toString().startsWith("session-") && path.toString().endsWith(".json");
+    }
+
+    private boolean isPiSession(String body) {
+        String firstLine = body.lines().findFirst().orElse("");
+        JsonNode first = readJson(firstLine);
+        return first != null && "session".equals(text(first, "type")) && first.has("cwd");
     }
 
     private boolean isCodexSession(Path path, String body) {
