@@ -1,6 +1,7 @@
 package com.cantara.kcp.memory.scanner;
 
 import com.cantara.kcp.memory.store.MemoryDatabase;
+import com.cantara.kcp.memory.store.ScanFileStateStore;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.store.ToolUsageStore;
 
@@ -14,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Logger;
 
 /**
@@ -37,6 +39,10 @@ public class SessionScanner {
     private final SessionParser parser;
     private final SessionStore sessionStore;
     private final ToolUsageStore toolUsageStore;
+    private final ScanFileStateStore fileState;
+
+    /** One session scan at a time in this JVM, whichever instance or thread starts it (#88). */
+    private static final ReentrantLock SCAN_LOCK = new ReentrantLock();
 
     public SessionScanner(MemoryDatabase db) {
         this(List.of(DEFAULT_CLAUDE_PROJECTS, DEFAULT_GEMINI_TMP, DEFAULT_CODEX_SESSIONS, DEFAULT_PI_SESSIONS), db);
@@ -47,27 +53,48 @@ public class SessionScanner {
     }
 
     public SessionScanner(List<Path> roots, MemoryDatabase db) {
+        this(roots, db, new SessionParser());
+    }
+
+    /** Test seam: lets a test observe how many files a scan actually parses. */
+    SessionScanner(List<Path> roots, MemoryDatabase db, SessionParser parser) {
         this.roots = List.copyOf(roots);
-        this.parser = new SessionParser();
+        this.parser = parser;
         this.sessionStore = new SessionStore(db);
         this.toolUsageStore = new ToolUsageStore(db);
+        this.fileState = new ScanFileStateStore(db);
     }
 
     /**
      * Scan all configured roots and return a summary.
+     * <p>
+     * Scans are serialised JVM-wide (#88): a scan that starts while another one runs
+     * (the scheduler and a {@code /scan} request, say) waits for it instead of walking
+     * and writing the same files in parallel.
      *
      * @param force if true, re-index even files already indexed
      */
     public ScanResult scan(boolean force) {
+        SCAN_LOCK.lock();
+        try {
+            return scanLocked(force);
+        } finally {
+            SCAN_LOCK.unlock();
+        }
+    }
+
+    private ScanResult scanLocked(boolean force) {
+        long startNanos = System.nanoTime();
         List<String> errors = new ArrayList<>();
-        int indexed = 0, skipped = 0;
+        int[] counts = new int[3]; // indexed, skipped, parsed
+        long[] bytesParsed = new long[1];
 
         try {
             List<Path> sessionFiles = collectSessionFiles();
             for (Path file : sessionFiles) {
                 try {
-                    boolean wasIndexed = indexFile(file, force);
-                    if (wasIndexed) indexed++; else skipped++;
+                    boolean wasIndexed = indexFile(file, force, counts, bytesParsed);
+                    if (wasIndexed) counts[0]++; else counts[1]++;
                 } catch (Exception e) {
                     errors.add(file + ": " + e.getMessage());
                 }
@@ -76,25 +103,53 @@ public class SessionScanner {
             errors.add("Walk error: " + e.getMessage());
         }
 
-        LOG.info(String.format("Scan complete: %d indexed, %d skipped, %d errors",
-                indexed, skipped, errors.size()));
-        return new ScanResult(indexed, skipped, errors.size(), errors);
+        long millis = (System.nanoTime() - startNanos) / 1_000_000;
+        // Keep the original "Scan complete: N indexed, N skipped, N errors" prefix: people grep for it.
+        LOG.info(String.format("Scan complete: %d indexed, %d skipped, %d errors; %d files parsed (%d bytes), %d ms",
+                counts[0], counts[1], errors.size(), counts[2], bytesParsed[0], millis));
+        return new ScanResult(counts[0], counts[1], errors.size(), errors, counts[2]);
     }
 
-    private boolean indexFile(Path file, boolean force) throws SQLException {
+    private boolean indexFile(Path file, boolean force, int[] counts, long[] bytesParsed)
+            throws IOException, SQLException {
+        // #88: decide "unchanged" from size/mtime BEFORE reading the file. The stamp is
+        // taken before the parse, so a file that grows during the parse is seen as
+        // changed on the next scan.
+        ScanFileStateStore.FileStamp stamp = ScanFileStateStore.FileStamp.of(file);
+        if (!force && isUnchangedSinceLastParse(file, stamp)) {
+            return false;
+        }
+
+        counts[2]++;
+        bytesParsed[0] += stamp.sizeBytes();
         Optional<SessionParser.ParseResult> result = parser.parse(file, deriveSlug(file));
-        if (result.isEmpty()) return false;
+        if (result.isEmpty()) {
+            fileState.record(ScanFileStateStore.SCANNER_SESSION, file, "", stamp);
+            return false;
+        }
 
         SessionParser.ParseResult pr = result.get();
-        if (!force && isCurrent(file, pr.session().getSessionId())) {
+        String sessionId = pr.session().getSessionId();
+        if (!force && isCurrent(file, sessionId)) {
+            fileState.record(ScanFileStateStore.SCANNER_SESSION, file, sessionId, stamp);
             return false;
         }
 
         pr.session().setScannedAt(Instant.now().toString());
         sessionStore.upsert(pr.session());
-        toolUsageStore.deleteForSession(pr.session().getSessionId());
+        toolUsageStore.deleteForSession(sessionId);
         toolUsageStore.insertBatch(pr.toolUsages());
+        fileState.record(ScanFileStateStore.SCANNER_SESSION, file, sessionId, stamp);
         return true;
+    }
+
+    private boolean isUnchangedSinceLastParse(Path file, ScanFileStateStore.FileStamp stamp) throws SQLException {
+        ScanFileStateStore.Entry e = fileState.get(ScanFileStateStore.SCANNER_SESSION, file);
+        if (e == null || !e.stamp().equals(stamp)) return false;
+        // The file produced no session last time: nothing to re-check in the index.
+        if (e.entityId().isEmpty()) return true;
+        // The session may have been removed from the index since; then parse again.
+        return sessionStore.getScannedAt(e.entityId()) != null;
     }
 
     private boolean isCurrent(Path file, String sessionId) throws SQLException {
@@ -172,7 +227,16 @@ public class SessionScanner {
         return parent.getFileName() != null ? parent.getFileName().toString() : "";
     }
 
-    public record ScanResult(int indexed, int skipped, int errors, List<String> errorMessages) {
+    /**
+     * @param parsed how many files were actually opened and parsed; files whose size and
+     *               mtime matched the last parse are skipped without being read (#88)
+     */
+    public record ScanResult(int indexed, int skipped, int errors, List<String> errorMessages, int parsed) {
+        /** Pre-#88 shape, kept for source compatibility. */
+        public ScanResult(int indexed, int skipped, int errors, List<String> errorMessages) {
+            this(indexed, skipped, errors, errorMessages, 0);
+        }
+
         public boolean hasErrors() { return errors > 0; }
     }
 }
