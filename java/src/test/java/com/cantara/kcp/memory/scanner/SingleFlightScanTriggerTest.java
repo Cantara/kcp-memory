@@ -117,4 +117,18 @@ class SingleFlightScanTriggerTest {
         assertTrue(trigger.request(false));
         assertEquals(2, runs.get());
     }
+
+    /** #88 review: an Error (not a RuntimeException) must not leave the trigger "running". */
+    @Test
+    void anErrorInTheScanDoesNotWedgeTheTrigger() {
+        AtomicInteger runs = new AtomicInteger();
+        SingleFlightScanTrigger trigger = new SingleFlightScanTrigger(force -> {
+            if (runs.incrementAndGet() == 1) throw new OutOfMemoryError("simulated");
+        }, Runnable::run); // same thread, so the Error reaches the test
+
+        assertThrows(OutOfMemoryError.class, () -> trigger.request(false));
+        assertFalse(trigger.isRunning(), "an Error must reset the running flag");
+        assertTrue(trigger.request(false), "the next request must start a new scan, not be coalesced");
+        assertEquals(2, runs.get());
+    }
 }

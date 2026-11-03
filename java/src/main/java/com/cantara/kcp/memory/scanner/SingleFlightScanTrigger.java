@@ -73,20 +73,35 @@ public final class SingleFlightScanTrigger {
 
     private void runLoop(boolean force) {
         boolean nextForce = force;
-        while (true) {
-            try {
-                scan.accept(nextForce);
-            } catch (RuntimeException e) {
-                LOG.log(Level.WARNING, "Scan failed", e);
-            }
-            synchronized (lock) {
-                if (!rerunRequested) {
-                    running = false;
-                    return;
+        boolean finishedNormally = false;
+        try {
+            while (true) {
+                try {
+                    scan.accept(nextForce);
+                } catch (RuntimeException e) {
+                    LOG.log(Level.WARNING, "Scan failed", e);
                 }
-                rerunRequested = false;
-                nextForce = rerunForce;
-                rerunForce = false;
+                synchronized (lock) {
+                    if (!rerunRequested) {
+                        running = false;
+                        finishedNormally = true;
+                        return;
+                    }
+                    rerunRequested = false;
+                    nextForce = rerunForce;
+                    rerunForce = false;
+                }
+            }
+        } finally {
+            // An Error (OutOfMemoryError, StackOverflowError, ...) escapes the loop above.
+            // Without this the trigger would stay "running" forever and every later
+            // request would be coalesced into a scan that never comes.
+            if (!finishedNormally) {
+                synchronized (lock) {
+                    running = false;
+                    rerunRequested = false;
+                    rerunForce = false;
+                }
             }
         }
     }

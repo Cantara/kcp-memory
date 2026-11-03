@@ -116,7 +116,8 @@ public class SessionScanner {
         // taken before the parse, so a file that grows during the parse is seen as
         // changed on the next scan.
         ScanFileStateStore.FileStamp stamp = ScanFileStateStore.FileStamp.of(file);
-        if (!force && isUnchangedSinceLastParse(file, stamp)) {
+        ScanFileStateStore.Entry previous = fileState.get(ScanFileStateStore.SCANNER_SESSION, file);
+        if (!force && isUnchangedSinceLastParse(previous, stamp)) {
             return false;
         }
 
@@ -130,7 +131,12 @@ public class SessionScanner {
 
         SessionParser.ParseResult pr = result.get();
         String sessionId = pr.session().getSessionId();
-        if (!force && isCurrent(file, sessionId)) {
+        // The mtime <= scanned_at check is only a fallback for files with no recorded
+        // state yet (the first scan after upgrading). With state, a differing stamp
+        // already says the file changed, even when its mtime is older than scanned_at:
+        // a file appended while it was being parsed gets an mtime just before the
+        // scanned_at that the parse then writes, and must still be re-indexed.
+        if (!force && previous == null && isCurrent(file, sessionId)) {
             fileState.record(ScanFileStateStore.SCANNER_SESSION, file, sessionId, stamp);
             return false;
         }
@@ -143,8 +149,8 @@ public class SessionScanner {
         return true;
     }
 
-    private boolean isUnchangedSinceLastParse(Path file, ScanFileStateStore.FileStamp stamp) throws SQLException {
-        ScanFileStateStore.Entry e = fileState.get(ScanFileStateStore.SCANNER_SESSION, file);
+    private boolean isUnchangedSinceLastParse(ScanFileStateStore.Entry e, ScanFileStateStore.FileStamp stamp)
+            throws SQLException {
         if (e == null || !e.stamp().equals(stamp)) return false;
         // The file produced no session last time: nothing to re-check in the index.
         if (e.entityId().isEmpty()) return true;

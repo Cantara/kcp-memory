@@ -54,8 +54,7 @@ public class ScanFileStateStore {
         String sql = """
                 INSERT INTO scan_file_state (path, scanner, entity_id, size_bytes, mtime_ms, recorded_at)
                 VALUES (?,?,?,?,?,?)
-                ON CONFLICT(path) DO UPDATE SET
-                  scanner     = excluded.scanner,
+                ON CONFLICT(path, scanner) DO UPDATE SET
                   entity_id   = excluded.entity_id,
                   size_bytes  = excluded.size_bytes,
                   mtime_ms    = excluded.mtime_ms,

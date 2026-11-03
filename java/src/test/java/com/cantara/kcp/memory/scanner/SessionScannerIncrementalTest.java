@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -39,6 +40,8 @@ class SessionScannerIncrementalTest {
         final AtomicInteger inFlight = new AtomicInteger();
         final AtomicInteger maxInFlight = new AtomicInteger();
         volatile CountDownLatch blockFirstCall;
+        /** Runs after the first parse has read the file, before the scanner indexes it. */
+        volatile Runnable afterFirstParse;
 
         @Override
         public Optional<ParseResult> parse(Path sessionPath, String slug) {
@@ -54,7 +57,10 @@ class SessionScannerIncrementalTest {
                         Thread.currentThread().interrupt();
                     }
                 }
-                return super.parse(sessionPath, slug);
+                Optional<ParseResult> result = super.parse(sessionPath, slug);
+                Runnable hook = afterFirstParse;
+                if (n == 1 && hook != null) hook.run();
+                return result;
             } finally {
                 inFlight.decrementAndGet();
             }
@@ -211,5 +217,37 @@ class SessionScannerIncrementalTest {
         assertEquals(1, parser.maxInFlight.get(), "two scans must never parse at the same time");
         // A parsed both files; B, running after A, found them unchanged.
         assertEquals(2, parser.calls.get());
+    }
+
+    /**
+     * #88 review: a file appended while it is being parsed ends up with an mtime just
+     * before the scanned_at the scan then writes. Its size differs from the recorded
+     * stamp, so the next scan parses it; it must also re-index it, not discard the
+     * parse because mtime <= scanned_at.
+     */
+    @Test
+    void fileAppendedDuringItsOwnParseIsReIndexedOnTheNextScan() throws Exception {
+        Path file = writeSession("s1", "first");
+
+        CountingParser parser = new CountingParser();
+        parser.afterFirstParse = () -> {
+            try {
+                // The reader has passed the end; the session writes one more line.
+                Files.writeString(file, claudeLine("s1", "appended mid-parse", "2026-03-01T10:01:00Z"),
+                        StandardOpenOption.APPEND);
+                // Pin the mtime before the scanned_at the scanner is about to write.
+                Files.setLastModifiedTime(file, FileTime.fromMillis(System.currentTimeMillis() - 1_000));
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
+        };
+        assertEquals(1, scanner(parser).scan(false).indexed());
+        assertFalse(new SessionStore(db).getById("s1").getAllUserText().contains("appended mid-parse"),
+                "precondition: the first scan read the file before the append");
+
+        SessionScanner.ScanResult next = scanner(new CountingParser()).scan(false);
+        assertEquals(1, next.parsed());
+        assertEquals(1, next.indexed(), "the changed file must be re-indexed");
+        assertTrue(new SessionStore(db).getById("s1").getAllUserText().contains("appended mid-parse"));
     }
 }
