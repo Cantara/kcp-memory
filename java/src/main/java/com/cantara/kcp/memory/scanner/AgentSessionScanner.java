@@ -3,6 +3,7 @@ package com.cantara.kcp.memory.scanner;
 import com.cantara.kcp.memory.model.AgentSession;
 import com.cantara.kcp.memory.store.AgentSessionStore;
 import com.cantara.kcp.memory.store.MemoryDatabase;
+import com.cantara.kcp.memory.store.ScanFileStateStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -37,6 +38,7 @@ public class AgentSessionScanner {
 
     private final Path root;
     private final AgentSessionStore store;
+    private final ScanFileStateStore fileState;
 
     public AgentSessionScanner(MemoryDatabase db) {
         this(DEFAULT_CLAUDE_PROJECTS, db);
@@ -45,14 +47,27 @@ public class AgentSessionScanner {
     public AgentSessionScanner(Path root, MemoryDatabase db) {
         this.root  = root;
         this.store = new AgentSessionStore(db);
+        this.fileState = new ScanFileStateStore(db);
     }
 
     /**
      * Scan for subagent JSONL files and index new/changed ones.
      *
+     * Holds {@link ScanLock#INDEX}, shared with {@link SessionScanner}, so an agent scan
+     * never runs in parallel with a session scan (#88).
+     *
      * @param force if true, re-index all files regardless of modification time
      */
     public ScanResult scan(boolean force) {
+        ScanLock.INDEX.lock();
+        try {
+            return scanLocked(force);
+        } finally {
+            ScanLock.INDEX.unlock();
+        }
+    }
+
+    private ScanResult scanLocked(boolean force) {
         List<String> errors = new ArrayList<>();
         int indexed = 0, skipped = 0;
 
@@ -76,16 +91,36 @@ public class AgentSessionScanner {
     }
 
     private boolean indexFile(Path file, boolean force) throws IOException, SQLException {
+        // #88: decide "unchanged" from size/mtime before reading the file at all.
+        ScanFileStateStore.FileStamp stamp = ScanFileStateStore.FileStamp.of(file);
+        if (!force && isUnchangedSinceLastParse(file, stamp)) {
+            return false;
+        }
+
         AgentSession agent = parseAgentFile(file);
-        if (agent == null) return false;
+        if (agent == null) {
+            fileState.record(ScanFileStateStore.SCANNER_AGENT, file, "", stamp);
+            return false;
+        }
 
         if (!force && isCurrent(file, agent.getAgentId())) {
+            fileState.record(ScanFileStateStore.SCANNER_AGENT, file, agent.getAgentId(), stamp);
             return false;
         }
 
         agent.setScannedAt(Instant.now().toString());
         store.upsert(agent);
+        fileState.record(ScanFileStateStore.SCANNER_AGENT, file, agent.getAgentId(), stamp);
         return true;
+    }
+
+    private boolean isUnchangedSinceLastParse(Path file, ScanFileStateStore.FileStamp stamp) throws SQLException {
+        ScanFileStateStore.Entry e = fileState.get(ScanFileStateStore.SCANNER_AGENT, file);
+        if (e == null || !e.stamp().equals(stamp)) return false;
+        // The file produced no agent last time: nothing to re-check in the index.
+        if (e.entityId().isEmpty()) return true;
+        // The row may have been removed from the index since; then parse again.
+        return store.getScannedAt(e.entityId()) != null;
     }
 
     private boolean isCurrent(Path file, String agentId) throws SQLException {
