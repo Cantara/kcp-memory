@@ -250,4 +250,46 @@ class SessionScannerIncrementalTest {
         assertEquals(1, next.indexed(), "the changed file must be re-indexed");
         assertTrue(new SessionStore(db).getById("s1").getAllUserText().contains("appended mid-parse"));
     }
+
+    /**
+     * #88: an agent scan must never run at the same time as a session scan. In the
+     * daemon the startup thread's agent scan could otherwise overlap a /scan session scan.
+     */
+    @Test
+    void agentScanDoesNotRunInParallelWithASessionScan() throws Exception {
+        writeSession("s1", "first");
+        Path agentRoot = Files.createDirectories(tmp.resolve("agent-projects"));
+        Path subagents = Files.createDirectories(agentRoot.resolve("-src-app").resolve("parent-1").resolve("subagents"));
+        Files.writeString(subagents.resolve("agent-a1.jsonl"),
+                "{\"isSidechain\":true,\"sessionId\":\"parent-1\",\"agentId\":\"a1\",\"cwd\":\"/src/app\","
+                        + "\"type\":\"user\",\"message\":{\"content\":\"do it\"}}\n");
+
+        CountingParser parser = new CountingParser();
+        CountDownLatch release = new CountDownLatch(1);
+        parser.blockFirstCall = release;
+        AtomicInteger agentParses = new AtomicInteger();
+        AtomicInteger agentParsesDuringSessionParse = new AtomicInteger();
+        AgentSessionScanner agentScanner = new AgentSessionScanner(agentRoot, db) {
+            @Override
+            com.cantara.kcp.memory.model.AgentSession parseAgentFile(Path file) throws IOException {
+                agentParses.incrementAndGet();
+                if (parser.inFlight.get() > 0) agentParsesDuringSessionParse.incrementAndGet();
+                return super.parseAgentFile(file);
+            }
+        };
+
+        Thread a = Thread.ofVirtual().start(() -> scanner(parser).scan(false));
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (parser.calls.get() == 0 && System.currentTimeMillis() < deadline) Thread.onSpinWait();
+        Thread b = Thread.ofVirtual().start(() -> agentScanner.scan(false));
+
+        Thread.sleep(300); // give the agent scan the chance to (wrongly) run now
+        assertEquals(0, agentParses.get(), "the agent scan must wait while a session scan runs");
+        release.countDown();
+        a.join(5_000);
+        b.join(5_000);
+
+        assertEquals(1, agentParses.get(), "the agent scan runs once the session scan is done");
+        assertEquals(0, agentParsesDuringSessionParse.get(), "the two scans must never run at once");
+    }
 }

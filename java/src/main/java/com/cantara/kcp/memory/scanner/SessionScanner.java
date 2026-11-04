@@ -15,7 +15,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Logger;
 
 /**
@@ -41,9 +40,6 @@ public class SessionScanner {
     private final ToolUsageStore toolUsageStore;
     private final ScanFileStateStore fileState;
 
-    /** One session scan at a time in this JVM, whichever instance or thread starts it (#88). */
-    private static final ReentrantLock SCAN_LOCK = new ReentrantLock();
-
     public SessionScanner(MemoryDatabase db) {
         this(List.of(DEFAULT_CLAUDE_PROJECTS, DEFAULT_GEMINI_TMP, DEFAULT_CODEX_SESSIONS, DEFAULT_PI_SESSIONS), db);
     }
@@ -68,18 +64,19 @@ public class SessionScanner {
     /**
      * Scan all configured roots and return a summary.
      * <p>
-     * Scans are serialised JVM-wide (#88): a scan that starts while another one runs
-     * (the scheduler and a {@code /scan} request, say) waits for it instead of walking
-     * and writing the same files in parallel.
+     * Scans are serialised JVM-wide with {@link ScanLock#INDEX}, shared with
+     * {@link AgentSessionScanner} (#88): a scan that starts while another one runs (the
+     * scheduler, the startup scan and a {@code /scan} request, say) waits for it instead
+     * of walking and writing the index in parallel.
      *
      * @param force if true, re-index even files already indexed
      */
     public ScanResult scan(boolean force) {
-        SCAN_LOCK.lock();
+        ScanLock.INDEX.lock();
         try {
             return scanLocked(force);
         } finally {
-            SCAN_LOCK.unlock();
+            ScanLock.INDEX.unlock();
         }
     }
 

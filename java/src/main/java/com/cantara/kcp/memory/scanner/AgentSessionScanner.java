@@ -53,9 +53,21 @@ public class AgentSessionScanner {
     /**
      * Scan for subagent JSONL files and index new/changed ones.
      *
+     * Holds {@link ScanLock#INDEX}, shared with {@link SessionScanner}, so an agent scan
+     * never runs in parallel with a session scan (#88).
+     *
      * @param force if true, re-index all files regardless of modification time
      */
     public ScanResult scan(boolean force) {
+        ScanLock.INDEX.lock();
+        try {
+            return scanLocked(force);
+        } finally {
+            ScanLock.INDEX.unlock();
+        }
+    }
+
+    private ScanResult scanLocked(boolean force) {
         List<String> errors = new ArrayList<>();
         int indexed = 0, skipped = 0;
 
