@@ -70,6 +70,22 @@
     </dependencies>
 
     <build>
+        <!-- Only the version file is filtered: the SQL migrations under db/ must reach the jar unchanged. -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>kcp-memory-version.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>kcp-memory-version.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
             <!-- Compiler -->
             <plugin>
@@ -97,6 +113,11 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.6.0</version>
+                <configuration>
+                    <systemPropertyVariables>
+                        <kcp.expected.version>${project.version}</kcp.expected.version>
+                    </systemPropertyVariables>
+                </configuration>
             </plugin>
 
             <!-- Shade plugin: fat JAR -->

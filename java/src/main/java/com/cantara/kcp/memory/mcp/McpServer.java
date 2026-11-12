@@ -76,7 +76,27 @@ public class McpServer {
 
     private static final Logger LOG              = Logger.getLogger(McpServer.class.getName());
     private static final String PROTOCOL_VERSION = "2024-11-05";
-    public  static final String SERVER_VERSION   = "0.37.0";
+    /**
+     * The version this jar was built as, from kcp-memory-version.properties, which Maven fills in from
+     * the pom. It was a hand-written constant, and v0.37.1 and v0.38.0 both shipped reporting 0.37.0.
+     */
+    public  static final String SERVER_VERSION   = loadServerVersion();
+
+    static String loadServerVersion() {
+        try (var in = McpServer.class.getResourceAsStream("/kcp-memory-version.properties")) {
+            if (in != null) {
+                var props = new java.util.Properties();
+                props.load(in);
+                String v = props.getProperty("version", "").trim();
+                if (!v.isEmpty() && !v.startsWith("${")) {
+                    return v;
+                }
+            }
+        } catch (java.io.IOException ignored) {
+            // fall through
+        }
+        return "unknown";
+    }
 
     private final ObjectMapper   mapper = new ObjectMapper();
     private final MemoryDatabase db;
