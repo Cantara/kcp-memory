@@ -19,9 +19,27 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      # The pom's version is the one source: the jar reports it (/health, status, MCP serverInfo).
+      # A tag that disagrees means the release bump was forgotten, so stop before building.
+      - name: Refuse a tag that differs from the pom's version
+        working-directory: java
+        run: |
+          pom=$(mvn -q help:evaluate -Dexpression=project.version -DforceStdout)
+          tag="${GITHUB_REF_NAME#v}"
+          [ "$pom" = "$tag" ] \
+            && echo "✓ tag $GITHUB_REF_NAME matches the pom's version" \
+            || { echo "✗ tag $GITHUB_REF_NAME, but java/pom.xml says $pom: bump the pom on main first"; exit 1; }
+
       - name: Build fat JAR
         working-directory: java
         run: mvn package -q
+
+      - name: Refuse a jar that reports a different version than the tag
+        run: |
+          got=$(unzip -p java/target/kcp-memory-daemon.jar kcp-memory-version.properties | sed -n 's/^version=//p')
+          [ "$got" = "${GITHUB_REF_NAME#v}" ] \
+            && echo "✓ jar reports $got" \
+            || { echo "✗ jar reports '$got', tag is $GITHUB_REF_NAME"; exit 1; }
 
       - name: Run tests
         working-directory: java
