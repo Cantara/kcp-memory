@@ -221,4 +221,42 @@ class SessionParserTest {
         assertEquals(0, s.getTurnCount());
         assertEquals(0, s.getToolCallCount());
     }
+
+    @Test
+    void whitespaceOnlyFileIsTreatedAsEmpty(@TempDir Path tmp) throws Exception {
+        Path file = tmp.resolve("blank-session.jsonl");
+        Files.writeString(file, "\n   \n\t\n");
+
+        Optional<SessionParser.ParseResult> result = parser.parse(file, "slug");
+        assertTrue(result.isPresent());
+        assertEquals("blank-session", result.get().session().getSessionId());
+        assertEquals(0, result.get().session().getTurnCount());
+    }
+
+    @Test
+    void lineSeparatorCharacterInsideAJsonStringDoesNotSplitTheRecord(@TempDir Path tmp) throws Exception {
+        // #88: the parser now streams lines (BufferedReader: \n, \r, \r\n) instead of
+        // readString + split("\\R"). \R also matched U+2028/U+2029/U+0085, which JSON
+        // allows unescaped inside strings, so such a record was cut in two and lost.
+        String jsonl = "{\"type\":\"user\",\"timestamp\":\"2026-03-01T10:00:00Z\",\"cwd\":\"/src/app\","
+                + "\"message\":{\"content\":\"before after\"}}\n"
+                + "{\"type\":\"assistant\",\"timestamp\":\"2026-03-01T10:00:05Z\",\"message\":{\"model\":\"m\",\"content\":[]}}\r\n";
+        Path file = tmp.resolve("sess-ls.jsonl");
+        Files.writeString(file, jsonl);
+
+        Session s = parser.parse(file, "slug").orElseThrow().session();
+        assertEquals("before after", s.getFirstMessage());
+        assertEquals(2, s.getTurnCount());
+        assertEquals("/src/app", s.getProjectDir());
+    }
+
+    @Test
+    void invalidUtf8StillYieldsEmpty(@TempDir Path tmp) throws Exception {
+        // Same outcome as before the streaming change: Files.readString threw on
+        // malformed input and parse returned empty; the reader does the same.
+        Path file = tmp.resolve("bad-utf8.jsonl");
+        Files.write(file, new byte[]{'{', '"', 'a', '"', ':', '"', (byte) 0xC3, (byte) 0x28, '"', '}', '\n'});
+
+        assertTrue(parser.parse(file, "slug").isEmpty());
+    }
 }
