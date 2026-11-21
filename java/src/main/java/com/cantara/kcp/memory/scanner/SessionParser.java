@@ -5,7 +5,10 @@ import com.cantara.kcp.memory.model.ToolUsage;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -25,28 +28,48 @@ public class SessionParser {
     private static final int MAX_FIRST_MSG = 500;
     private static final int MAX_ALL_USER = 8000;
 
+    /**
+     * Parse one transcript file. Line-based formats (Claude, Codex, pi) are streamed one
+     * line at a time instead of {@code readString} + {@code split} (#88, #85), so peak
+     * memory is one line, not two copies of the whole file. Gemini's single JSON document
+     * is read by Jackson straight from the file.
+     */
     public Optional<ParseResult> parse(Path sessionPath, String slug) {
         try {
-            String body = Files.readString(sessionPath);
-            if (body.isBlank()) {
+            // Literal first line (format detection) and whether the file has any content.
+            String firstLine;
+            boolean blank;
+            try (BufferedReader reader = Files.newBufferedReader(sessionPath, StandardCharsets.UTF_8)) {
+                firstLine = reader.readLine();
+                String line = firstLine;
+                while (line != null && line.isBlank()) line = reader.readLine();
+                blank = line == null;
+            }
+            if (blank) {
                 return Optional.of(emptyResult(defaultSessionId(sessionPath), slug, sessionPath));
             }
 
             if (isGeminiSession(sessionPath)) {
-                return parseGemini(sessionPath, slug, body);
+                return parseGemini(sessionPath, slug);
             }
-            if (isCodexSession(sessionPath, body)) {
-                return parseCodex(sessionPath, slug, body);
+            try (BufferedReader reader = Files.newBufferedReader(sessionPath, StandardCharsets.UTF_8)) {
+                Iterable<String> lines = reader.lines()::iterator;
+                if (isPiSession(firstLine)) {
+                    return parsePi(sessionPath, slug, lines);
+                }
+                if (isCodexSession(sessionPath, firstLine)) {
+                    return parseCodex(sessionPath, slug, lines);
+                }
+                return parseClaude(sessionPath, slug, lines);
             }
-            return parseClaude(sessionPath, slug, body);
-        } catch (IOException e) {
+        } catch (IOException | UncheckedIOException e) {
             return Optional.empty();
         }
     }
 
-    private Optional<ParseResult> parseClaude(Path path, String slug, String body) {
+    private Optional<ParseResult> parseClaude(Path path, String slug, Iterable<String> lines) {
         SessionAccumulator acc = new SessionAccumulator(defaultSessionId(path), slug, path);
-        for (String rawLine : body.split("\\R")) {
+        for (String rawLine : lines) {
             String line = rawLine.trim();
             if (line.isEmpty()) continue;
 
@@ -97,8 +120,13 @@ public class SessionParser {
         return Optional.of(acc.toResult());
     }
 
-    private Optional<ParseResult> parseGemini(Path path, String slug, String body) {
-        JsonNode root = readJson(body);
+    private Optional<ParseResult> parseGemini(Path path, String slug) {
+        JsonNode root;
+        try {
+            root = MAPPER.readTree(path.toFile());
+        } catch (Exception e) {
+            root = null;
+        }
         if (root == null || !root.isObject()) return Optional.empty();
 
         SessionAccumulator acc = new SessionAccumulator(
@@ -132,10 +160,10 @@ public class SessionParser {
         return Optional.of(acc.toResult());
     }
 
-    private Optional<ParseResult> parseCodex(Path path, String slug, String body) {
+    private Optional<ParseResult> parseCodex(Path path, String slug, Iterable<String> lines) {
         SessionAccumulator acc = new SessionAccumulator(defaultSessionId(path), slug, path);
 
-        for (String rawLine : body.split("\\R")) {
+        for (String rawLine : lines) {
             String line = rawLine.trim();
             if (line.isEmpty()) continue;
 
@@ -196,6 +224,72 @@ public class SessionParser {
         return Optional.of(acc.toResult());
     }
 
+    private Optional<ParseResult> parsePi(Path path, String slug, Iterable<String> lines) {
+        SessionAccumulator acc = new SessionAccumulator(defaultSessionId(path), slug, path);
+        String modelChangeFallback = null;
+
+        // Like the other formats above, this walks every record in file order and does
+        // not reconstruct branches from parentId (pi supports --fork/--resume, which can
+        // leave abandoned branches in the same file). Turn/tool counts are a superset
+        // across all branches, not just the active one.
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (line.isEmpty()) continue;
+
+            JsonNode node = readJson(line);
+            if (node == null) continue;
+
+            String type = text(node, "type");
+            String ts = text(node, "timestamp");
+            acc.captureTimestamp(ts);
+
+            if ("session".equals(type)) {
+                if (node.has("id")) acc.sessionId = node.get("id").asText();
+                if (node.has("cwd")) acc.projectDir = node.get("cwd").asText();
+                continue;
+            }
+            if ("model_change".equals(type)) {
+                // Fallback only — an assistant message's own "model" field (below) is the
+                // more descriptive, resolved name and always wins when the session has one.
+                // Keep the latest model_change, not the first: a session can switch models
+                // mid-conversation and then end before any assistant message reports one.
+                if (node.has("modelId")) {
+                    modelChangeFallback = node.get("modelId").asText();
+                }
+                continue;
+            }
+            if (!"message".equals(type)) continue;
+
+            JsonNode message = node.path("message");
+            String role = text(message, "role");
+
+            if ("user".equals(role)) {
+                acc.addUserText(extractTextBlocks(message.path("content")));
+            } else if ("assistant".equals(role)) {
+                if (acc.model == null && message.has("model")) {
+                    acc.model = message.get("model").asText();
+                }
+                JsonNode content = message.path("content");
+                if (content.isArray()) {
+                    for (JsonNode block : content) {
+                        if ("toolCall".equals(text(block, "type"))) {
+                            String toolName = block.has("name") ? block.get("name").asText() : "unknown";
+                            String toolInput = block.has("arguments") ? block.get("arguments").toString() : null;
+                            acc.addTool(toolName, toolInput, ts);
+                        }
+                    }
+                }
+                acc.turnCount++;
+            }
+            // role "toolResult" and "system" carry no independent turn/tool-call signal —
+            // the matching toolCall block on the assistant message already counted it.
+        }
+
+        if (acc.model == null) acc.model = modelChangeFallback;
+        if (acc.projectDir == null) acc.projectDir = slug;
+        return Optional.of(acc.toResult());
+    }
+
     private ParseResult emptyResult(String sessionId, String slug, Path path) {
         return new SessionAccumulator(sessionId, slug, path).toResult();
     }
@@ -204,10 +298,14 @@ public class SessionParser {
         return path.getFileName().toString().startsWith("session-") && path.toString().endsWith(".json");
     }
 
-    private boolean isCodexSession(Path path, String body) {
+    private boolean isPiSession(String firstLine) {
+        JsonNode first = readJson(firstLine != null ? firstLine : "");
+        return first != null && "session".equals(text(first, "type")) && first.has("cwd");
+    }
+
+    private boolean isCodexSession(Path path, String firstLine) {
         if (path.getFileName().toString().startsWith("rollout-")) return true;
-        String firstLine = body.lines().findFirst().orElse("");
-        JsonNode first = readJson(firstLine);
+        JsonNode first = readJson(firstLine != null ? firstLine : "");
         return first != null && "session_meta".equals(text(first, "type"));
     }
 

@@ -48,7 +48,7 @@ import java.util.logging.Logger;
  * }
  * </pre>
  * <p>
- * Tools exposed (8):
+ * Tools exposed (16):
  * <ul>
  *   <li>kcp_memory_search          — FTS5 search over session transcripts</li>
  *   <li>kcp_memory_events_search   — FTS5 search over tool-call events (requires kcp-commands v0.9.0)</li>
@@ -61,20 +61,51 @@ import java.util.logging.Logger;
  *   <li>kcp_memory_analyze        — manifest quality metrics: retry/help/error rates per manifest key (v0.16.0)</li>
  *   <li>kcp_memory_forget         — right-to-forget: tombstone a memory so recall never surfaces it (v0.33.0)</li>
  *   <li>kcp_memory_retention      — declare/clear a retention window (valid_until) on a memory (v0.33.0)</li>
+ *   <li>kcp_memory_decisions      — query the decision memory index (v0.36.0)</li>
+ *   <li>kcp_memory_ls             — list a virtual directory over sessions/decisions/events/subagents (v0.38.0)</li>
+ *   <li>kcp_memory_tree           — recursive kcp_memory_ls to a bounded depth (v0.38.0)</li>
+ *   <li>kcp_memory_read           — full content of a virtual leaf path (v0.38.0)</li>
+ *   <li>kcp_memory_nav_history    — replay recent kcp_memory_ls/tree/read calls (v0.38.0)</li>
  * </ul>
+ * <p>
+ * See {@link NavigationTools} for the virtual path scheme behind the last four
+ * tools — a generic ls/tree/read verb set layered over the same underlying
+ * data the purpose-specific tools above already query, additive only.
  */
 public class McpServer {
 
     private static final Logger LOG              = Logger.getLogger(McpServer.class.getName());
     private static final String PROTOCOL_VERSION = "2024-11-05";
-    public  static final String SERVER_VERSION   = "0.37.0";
+    /**
+     * The version this jar was built as, from kcp-memory-version.properties, which Maven fills in from
+     * the pom. It was a hand-written constant, and v0.37.1 and v0.38.0 both shipped reporting 0.37.0.
+     */
+    public  static final String SERVER_VERSION   = loadServerVersion();
+
+    static String loadServerVersion() {
+        try (var in = McpServer.class.getResourceAsStream("/kcp-memory-version.properties")) {
+            if (in != null) {
+                var props = new java.util.Properties();
+                props.load(in);
+                String v = props.getProperty("version", "").trim();
+                if (!v.isEmpty() && !v.startsWith("${")) {
+                    return v;
+                }
+            }
+        } catch (java.io.IOException ignored) {
+            // fall through
+        }
+        return "unknown";
+    }
 
     private final ObjectMapper   mapper = new ObjectMapper();
     private final MemoryDatabase db;
+    private final NavigationTools navigationTools;
     private final DecisionScanner decisionScanner;
 
     public McpServer(MemoryDatabase db) {
         this.db = db;
+        this.navigationTools = new NavigationTools(db);
         this.decisionScanner = new DecisionScanner(db);
     }
 
@@ -278,6 +309,53 @@ public class McpServer {
                         .optional("limit",  "integer", "Max results (default 10)")
         ));
 
+        tools.add(tool(
+                "kcp_memory_ls",
+                "List the contents of a virtual directory over kcp-memory's data — the same shape as " +
+                "listing a real filesystem. Top-level directories: /sessions, /decisions, /events, " +
+                "/subagents. Each entry is marked 'directory' (has children — browse further with " +
+                "kcp_memory_ls) or 'file' (a leaf — read it with kcp_memory_read). Use this to browse " +
+                "when you don't yet know the right search query. Added in v0.38.0.",
+                schema()
+                        .optional("path",  "string",  "Virtual directory path, e.g. '/', '/sessions', '/sessions/<id>'. Defaults to '/'.")
+                        .optional("limit", "integer", "Max entries to return (default 20)")
+                        .optional("session_id", "string", "Optional caller-supplied id to correlate this call in kcp_memory_nav_history")
+        ));
+
+        tools.add(tool(
+                "kcp_memory_tree",
+                "Like kcp_memory_ls but recursive to a bounded depth — shows the shape of a branch of " +
+                "the virtual hierarchy at a glance (e.g. a session and its subagents in one call). " +
+                "Depth is capped to avoid a pathological full-database dump. Added in v0.38.0.",
+                schema()
+                        .optional("path",  "string",  "Virtual directory path to expand. Defaults to '/'.")
+                        .optional("depth", "integer", "Recursion depth, default 2, hard-capped at " + NavigationTools.MAX_TREE_DEPTH)
+                        .optional("limit", "integer", "Max entries per directory level (default 20)")
+                        .optional("session_id", "string", "Optional caller-supplied id to correlate this call in kcp_memory_nav_history")
+        ));
+
+        tools.add(tool(
+                "kcp_memory_read",
+                "Read the full content of a virtual leaf path returned by kcp_memory_ls or " +
+                "kcp_memory_tree — e.g. '/sessions/<id>', '/sessions/<id>/<agent-id>', " +
+                "'/decisions/<decision-id>', '/events/<event-id>', '/subagents/<agent-id>'. " +
+                "Added in v0.38.0.",
+                schema()
+                        .required("path", "string", "Virtual leaf path to read")
+                        .optional("session_id", "string", "Optional caller-supplied id to correlate this call in kcp_memory_nav_history")
+        ));
+
+        tools.add(tool(
+                "kcp_memory_nav_history",
+                "Show the recent kcp_memory_ls / kcp_memory_tree / kcp_memory_read calls — the " +
+                "browsing trajectory. Use this to diagnose why an agent ended up looking at a " +
+                "particular path. Added in v0.38.0.",
+                schema()
+                        .optional("limit",      "integer", "Max entries to return (default 20)")
+                        .optional("session_id", "string",  "Filter to calls tagged with this correlation id")
+                        .optional("since",      "string",  "Only calls at/after this ISO-8601 UTC timestamp")
+        ));
+
         return result;
     }
 
@@ -313,6 +391,10 @@ public class McpServer {
                 case "kcp_memory_forget"          -> toolForget(args);
                 case "kcp_memory_retention"       -> toolRetention(args);
                 case "kcp_memory_decisions"       -> toolDecisions(args);
+                case "kcp_memory_ls"              -> navigationTools.ls(args);
+                case "kcp_memory_tree"            -> navigationTools.tree(args);
+                case "kcp_memory_read"            -> navigationTools.read(args);
+                case "kcp_memory_nav_history"     -> navigationTools.navHistory(args);
                 default                            -> "Unknown tool: " + name;
             };
         } catch (Exception e) {
@@ -447,7 +529,7 @@ public class McpServer {
      * session content — the recall gate that protects search/list otherwise
      * doesn't cover direct-by-ID lookups.
      */
-    private static String governanceDenialReason(SessionStore store, String resolvedSessionId) throws Exception {
+    static String governanceDenialReason(SessionStore store, String resolvedSessionId) throws Exception {
         SessionStore.Governance g = store.getGovernance(resolvedSessionId);
         if (g == null) return null;
         GovernanceGate.Decision d = GovernanceGate.evaluate(

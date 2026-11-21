@@ -1,6 +1,11 @@
 [Unit]
 Description=kcp-memory daemon
 After=network.target
+# Stop retrying after 5 failed starts in 5 minutes. systemd's default limit (5 starts in 10 s) can
+# never trip with RestartSec=5, so a daemon that cannot start (no java on PATH, a broken jar) would
+# otherwise restart every 5 seconds for ever. Once it is fixed: systemctl --user reset-failed kcp-memory
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

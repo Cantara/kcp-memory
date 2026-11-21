@@ -47,7 +47,7 @@ import java.util.concurrent.TimeUnit;
 @Command(
         name = "kcp-memory",
         mixinStandardHelpOptions = true,
-        version = McpServer.SERVER_VERSION,
+        versionProvider = KcpMemoryCli.BuildVersion.class,
         description = "Episodic memory for Claude Code — index and query session history",
         subcommands = {
                 KcpMemoryCli.DaemonCmd.class,
@@ -65,6 +65,14 @@ import java.util.concurrent.TimeUnit;
         }
 )
 public class KcpMemoryCli implements Callable<Integer> {
+
+    /** --version prints the version the jar was built as (a provider, since it is read at run time). */
+    static class BuildVersion implements IVersionProvider {
+        @Override
+        public String[] getVersion() {
+            return new String[] { McpServer.SERVER_VERSION };
+        }
+    }
 
     @Override
     public Integer call() {

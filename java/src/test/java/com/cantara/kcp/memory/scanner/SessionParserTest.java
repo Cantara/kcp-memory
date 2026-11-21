@@ -135,6 +135,82 @@ class SessionParserTest {
     }
 
     @Test
+    void parsesPiJsonlSessions(@TempDir Path tmp) throws Exception {
+        String jsonl = """
+                {"type":"session","version":3,"id":"pi-session-1","timestamp":"2026-03-01T10:00:00.000Z","cwd":"/src/myapp"}
+                {"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-03-01T10:00:00.100Z","provider":"acme","modelId":"acme-fast-0"}
+                {"type":"message","id":"u1","parentId":"m1","timestamp":"2026-03-01T10:00:01.000Z","message":{"role":"system","content":""}}
+                {"type":"message","id":"u2","parentId":"u1","timestamp":"2026-03-01T10:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"How do I add authentication?"}]}}
+                {"type":"message","id":"a1","parentId":"u2","timestamp":"2026-03-01T10:00:08.000Z","message":{"role":"assistant","model":"acme-large-1","content":[{"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"/src/myapp/src/auth.ts"}}]}}
+                {"type":"message","id":"t1","parentId":"a1","timestamp":"2026-03-01T10:00:08.500Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":"file contents"}],"isError":false}}
+                {"type":"message","id":"u3","parentId":"t1","timestamp":"2026-03-01T10:01:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Can you also update the tests?"}]}}
+                """;
+
+        Path file = tmp.resolve("2026-03-01T10-00-00-000Z_pi-session-1.jsonl");
+        Files.writeString(file, jsonl);
+
+        Optional<SessionParser.ParseResult> result = parser.parse(file, "my-project");
+        assertTrue(result.isPresent());
+
+        Session s = result.get().session();
+        assertEquals("pi-session-1", s.getSessionId());
+        assertEquals("/src/myapp", s.getProjectDir());
+        assertEquals("acme-large-1", s.getModel(),
+                "the assistant message's own model must win over the model_change fallback");
+        assertEquals("How do I add authentication?", s.getFirstMessage());
+        // Two user turns + one assistant turn = 3. The system message and the
+        // toolResult message must NOT be counted as turns.
+        assertEquals(3, s.getTurnCount());
+        assertEquals(1, s.getToolCallCount());
+        assertTrue(s.getToolNames().contains("read"));
+        assertTrue(s.getFiles().contains("/src/myapp/src/auth.ts"));
+    }
+
+    @Test
+    void piSessionFallsBackToModelChangeWhenNoAssistantMessage(@TempDir Path tmp) throws Exception {
+        // A session that ends before any assistant turn (e.g. the user closed it, or an
+        // error interrupted it) still recorded a model_change — that must not be lost.
+        String jsonl = """
+                {"type":"session","version":3,"id":"pi-session-2","timestamp":"2026-03-01T10:00:00.000Z","cwd":"/src/myapp"}
+                {"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-03-01T10:00:00.100Z","provider":"acme","modelId":"acme-large-1"}
+                {"type":"message","id":"u1","parentId":"m1","timestamp":"2026-03-01T10:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"hello?"}]}}
+                """;
+
+        Path file = tmp.resolve("2026-03-01T10-00-00-000Z_pi-session-2.jsonl");
+        Files.writeString(file, jsonl);
+
+        Optional<SessionParser.ParseResult> result = parser.parse(file, "my-project");
+        assertTrue(result.isPresent());
+
+        Session s = result.get().session();
+        assertEquals("acme-large-1", s.getModel(),
+                "model_change's modelId must be used when no assistant message ever reports a model");
+        assertEquals(0, s.getToolCallCount());
+    }
+
+    @Test
+    void piSessionModelChangeFallbackUsesTheLatestSwitch(@TempDir Path tmp) throws Exception {
+        // The user can switch models mid-session; if it then ends before any assistant
+        // message, the fallback must reflect the last selection, not the first.
+        String jsonl = """
+                {"type":"session","version":3,"id":"pi-session-3","timestamp":"2026-03-01T10:00:00.000Z","cwd":"/src/myapp"}
+                {"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-03-01T10:00:00.100Z","provider":"acme","modelId":"acme-fast-0"}
+                {"type":"model_change","id":"m2","parentId":"m1","timestamp":"2026-03-01T10:00:02.000Z","provider":"acme","modelId":"acme-large-1"}
+                {"type":"message","id":"u1","parentId":"m2","timestamp":"2026-03-01T10:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"hello?"}]}}
+                """;
+
+        Path file = tmp.resolve("2026-03-01T10-00-00-000Z_pi-session-3.jsonl");
+        Files.writeString(file, jsonl);
+
+        Optional<SessionParser.ParseResult> result = parser.parse(file, "my-project");
+        assertTrue(result.isPresent());
+
+        Session s = result.get().session();
+        assertEquals("acme-large-1", s.getModel(),
+                "the latest model_change must win, not the first");
+    }
+
+    @Test
     void handlesEmptyFile(@TempDir Path tmp) throws Exception {
         Path file = tmp.resolve("empty-session.jsonl");
         Files.writeString(file, "");
@@ -144,5 +220,43 @@ class SessionParserTest {
         Session s = result.get().session();
         assertEquals(0, s.getTurnCount());
         assertEquals(0, s.getToolCallCount());
+    }
+
+    @Test
+    void whitespaceOnlyFileIsTreatedAsEmpty(@TempDir Path tmp) throws Exception {
+        Path file = tmp.resolve("blank-session.jsonl");
+        Files.writeString(file, "\n   \n\t\n");
+
+        Optional<SessionParser.ParseResult> result = parser.parse(file, "slug");
+        assertTrue(result.isPresent());
+        assertEquals("blank-session", result.get().session().getSessionId());
+        assertEquals(0, result.get().session().getTurnCount());
+    }
+
+    @Test
+    void lineSeparatorCharacterInsideAJsonStringDoesNotSplitTheRecord(@TempDir Path tmp) throws Exception {
+        // #88: the parser now streams lines (BufferedReader: \n, \r, \r\n) instead of
+        // readString + split("\\R"). \R also matched U+2028/U+2029/U+0085, which JSON
+        // allows unescaped inside strings, so such a record was cut in two and lost.
+        String jsonl = "{\"type\":\"user\",\"timestamp\":\"2026-03-01T10:00:00Z\",\"cwd\":\"/src/app\","
+                + "\"message\":{\"content\":\"before after\"}}\n"
+                + "{\"type\":\"assistant\",\"timestamp\":\"2026-03-01T10:00:05Z\",\"message\":{\"model\":\"m\",\"content\":[]}}\r\n";
+        Path file = tmp.resolve("sess-ls.jsonl");
+        Files.writeString(file, jsonl);
+
+        Session s = parser.parse(file, "slug").orElseThrow().session();
+        assertEquals("before after", s.getFirstMessage());
+        assertEquals(2, s.getTurnCount());
+        assertEquals("/src/app", s.getProjectDir());
+    }
+
+    @Test
+    void invalidUtf8StillYieldsEmpty(@TempDir Path tmp) throws Exception {
+        // Same outcome as before the streaming change: Files.readString threw on
+        // malformed input and parse returned empty; the reader does the same.
+        Path file = tmp.resolve("bad-utf8.jsonl");
+        Files.write(file, new byte[]{'{', '"', 'a', '"', ':', '"', (byte) 0xC3, (byte) 0x28, '"', '}', '\n'});
+
+        assertTrue(parser.parse(file, "slug").isEmpty());
     }
 }

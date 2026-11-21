@@ -6,7 +6,7 @@
 
     <groupId>com.cantara.kcp</groupId>
     <artifactId>kcp-memory</artifactId>
-    <version>0.37.0</version>
+    <version>0.39.1</version>
     <packaging>jar</packaging>
 
     <name>kcp-memory</name>
@@ -26,7 +26,7 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <sqlite.version>3.53.4.0</sqlite.version>
-        <jackson.version>2.22.2</jackson.version>
+        <jackson.version>2.23.0</jackson.version>
         <picocli.version>4.7.7</picocli.version>
         <junit.version>6.1.3</junit.version>
     </properties>
@@ -70,6 +70,22 @@
     </dependencies>
 
     <build>
+        <!-- Only the version file is filtered: the SQL migrations under db/ must reach the jar unchanged. -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>kcp-memory-version.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>kcp-memory-version.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
             <!-- Compiler -->
             <plugin>
@@ -96,7 +112,12 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.6.0</version>
+                <version>3.6.1</version>
+                <configuration>
+                    <systemPropertyVariables>
+                        <kcp.expected.version>${project.version}</kcp.expected.version>
+                    </systemPropertyVariables>
+                </configuration>
             </plugin>
 
             <!-- Shade plugin: fat JAR -->
