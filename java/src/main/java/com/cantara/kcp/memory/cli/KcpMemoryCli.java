@@ -21,6 +21,7 @@ import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.PatternStore;
 import com.cantara.kcp.memory.store.SessionStore;
 import com.cantara.kcp.memory.store.ToolUsageStore;
+import com.cantara.kcp.memory.update.InstalledVersions;
 import com.cantara.kcp.memory.update.UpdateChecker;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -1001,7 +1002,7 @@ public class KcpMemoryCli implements Callable<Integer> {
         public Integer call() throws Exception {
             UpdateChecker checker = new UpdateChecker();
             String currentMem = McpServer.SERVER_VERSION;
-            String currentCmd = readCachedCmdVersion(currentMem);
+            String currentCmd = InstalledVersions.kcpCommands();   // null when kcp-commands is not installed
 
             System.out.println("Checking for updates...");
             UpdateChecker.Versions v = checker.checkNow(currentMem, currentCmd);
@@ -1010,8 +1011,10 @@ public class KcpMemoryCli implements Callable<Integer> {
                     v.currentMemory(), v.latestMemory(),
                     v.memoryOutdated() ? "<-- UPDATE AVAILABLE" : "up to date");
             System.out.printf("  kcp-commands  installed: %-10s  latest: %-10s  %s%n",
-                    v.currentCommands(), v.latestCommands(),
-                    v.commandsOutdated() ? "<-- UPDATE AVAILABLE" : "up to date");
+                    v.currentCommands() != null ? v.currentCommands() : "not found",
+                    v.latestCommands() != null ? v.latestCommands() : "?",
+                    v.currentCommands() == null ? "not installed here, not compared"
+                            : v.commandsOutdated() ? "<-- UPDATE AVAILABLE" : "up to date");
             System.out.println();
 
             if (!v.anyOutdated()) {
@@ -1049,17 +1052,6 @@ public class KcpMemoryCli implements Callable<Integer> {
             if (v.commandsOutdated() && Files.exists(kcpDir.resolve(UpdateChecker.CMD_JAR)))
                 System.out.println("  pkill -f kcp-commands-daemon; nohup java -jar ~/.kcp/kcp-commands-daemon.jar > /tmp/kcp-commands.log 2>&1 &");
             return 0;
-        }
-
-        /** Best-effort read of kcp-commands version from the shared cache. */
-        private static String readCachedCmdVersion(String fallback) {
-            try {
-                Path cache = Path.of(System.getProperty("user.home"), ".kcp", "last-update-check");
-                if (Files.exists(cache))
-                    return new com.fasterxml.jackson.databind.ObjectMapper()
-                            .readTree(cache.toFile()).path("latestCommands").asText(fallback);
-            } catch (Exception ignored) {}
-            return fallback;
         }
     }
 
