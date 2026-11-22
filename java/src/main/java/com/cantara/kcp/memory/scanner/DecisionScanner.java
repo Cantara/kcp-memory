@@ -32,6 +32,12 @@ import java.util.logging.Logger;
  * A session cwd is often a subdirectory of the project, so each candidate is walked up to the
  * nearest ancestor that contains {@code .sdd/decisions/}.
  *
+
+ * <p>Each project carries a {@link Decision.Source}: {@code CONFIGURED} when it comes from
+ * {@code KCP_MEMORY_DECISION_PROJECTS} or the legacy {@code project.json} source, {@code SESSION}
+ * when only a session working directory led to it. Session-discovered text is repository-authored and
+ * unverified, and the tool output marks it as such (#97).
+ *
  * <p>{@link #rescanIfChanged()} is cheap enough to call on every query: it fingerprints the
  * decision files (name + mtime + size) and re-indexes only projects whose files changed.
  */
@@ -93,11 +99,13 @@ public class DecisionScanner {
         List<String> errors = new ArrayList<>();
         int indexed = 0, skipped = 0;
 
-        Set<Path> projectRoots = discoverProjects(errors);
+        Map<Path, Decision.Source> projectSources = discoverProjects(errors);
         Map<Path, String> current = new HashMap<>();
-        for (Path projectRoot : projectRoots) {
+        for (Map.Entry<Path, Decision.Source> pe : projectSources.entrySet()) {
+            Path projectRoot = pe.getKey();
             try {
-                current.put(projectRoot, fingerprint(projectRoot));
+                // The source is part of the fingerprint, so configuring a project later re-indexes it.
+                current.put(projectRoot, pe.getValue().value() + "\n" + fingerprint(projectRoot));
             } catch (IOException e) {
                 errors.add(projectRoot + ": " + e.getMessage());
             }
@@ -122,7 +130,7 @@ public class DecisionScanner {
                 continue;
             }
             try {
-                indexed += reindexProject(projectRoot);
+                indexed += reindexProject(projectRoot, projectSources.get(projectRoot));
                 fingerprints.put(projectRoot, e.getValue());
             } catch (Exception ex) {
                 errors.add(projectRoot + ": " + ex.getMessage());
@@ -147,24 +155,27 @@ public class DecisionScanner {
     // ------------------------------------------------------------------
 
     /** Discover project roots that contain a .sdd/decisions/ directory. */
-    Set<Path> discoverProjects(List<String> errors) {
-        Set<Path> candidates = new LinkedHashSet<>();
+    Map<Path, Decision.Source> discoverProjects(List<String> errors) {
+        Map<Path, Decision.Source> candidates = new LinkedHashMap<>();
         try {
-            candidates.addAll(projectDirsFromDatabase());
+            // Session working directories are the only source the user did not configure.
+            for (Path p : projectDirsFromDatabase()) candidates.merge(p, Decision.Source.SESSION, Decision.Source::stronger);
         } catch (SQLException e) {
             errors.add("Discovery (database) error: " + e.getMessage());
         }
         try {
-            candidates.addAll(projectDirsFromProjectJson());
+            for (Path p : projectDirsFromProjectJson()) candidates.merge(p, Decision.Source.CONFIGURED, Decision.Source::stronger);
         } catch (IOException e) {
             errors.add("Discovery (project.json) error: " + e.getMessage());
         }
-        candidates.addAll(extraProjects);
+        for (Path p : extraProjects) candidates.merge(p, Decision.Source.CONFIGURED, Decision.Source::stronger);
 
-        Set<Path> projects = new TreeSet<>();
-        for (Path candidate : candidates) {
-            Path root = findDecisionRoot(candidate);
-            if (root != null) projects.add(root);
+        // A session cwd is often a subdirectory of a configured project: both walk up to the same root,
+        // and CONFIGURED wins there.
+        Map<Path, Decision.Source> projects = new TreeMap<>();
+        for (Map.Entry<Path, Decision.Source> candidate : candidates.entrySet()) {
+            Path root = findDecisionRoot(candidate.getKey());
+            if (root != null) projects.merge(root, candidate.getValue(), Decision.Source::stronger);
         }
         return projects;
     }
@@ -277,7 +288,7 @@ public class DecisionScanner {
      *
      * @return number of decisions indexed
      */
-    private int reindexProject(Path projectRoot) throws Exception {
+    private int reindexProject(Path projectRoot, Decision.Source source) throws Exception {
         String projectPath = projectRoot.toString();
         Connection conn = db.getConnection();
         boolean prevAutoCommit = conn.getAutoCommit();
@@ -286,7 +297,7 @@ public class DecisionScanner {
             store.deleteByProject(projectPath);
             int count = 0;
             for (Path yamlFile : decisionFiles(projectRoot)) {
-                count += indexDecisionFile(yamlFile, projectPath);
+                count += indexDecisionFile(yamlFile, projectPath, source);
             }
             conn.commit();
             return count;
@@ -307,7 +318,7 @@ public class DecisionScanner {
      * @return number of decisions indexed
      */
     @SuppressWarnings("unchecked")
-    private int indexDecisionFile(Path yamlFile, String projectPath) {
+    private int indexDecisionFile(Path yamlFile, String projectPath, Decision.Source source) {
         Object rootObj;
         try {
             rootObj = yaml.load(Files.readString(yamlFile));
@@ -329,7 +340,7 @@ public class DecisionScanner {
                 if (!(item instanceof Map<?, ?> d)) {
                     throw new IllegalArgumentException("entry is not a mapping: " + item);
                 }
-                Decision decision = parseDecision((Map<String, Object>) d, projectPath);
+                Decision decision = parseDecision((Map<String, Object>) d, projectPath, source);
                 store.upsert(decision, yamlFile.toString());
                 count++;
             } catch (Exception e) {
@@ -344,6 +355,10 @@ public class DecisionScanner {
      * Scalars are stringified, so unquoted YAML dates, numbers and booleans are accepted.
      */
     static Decision parseDecision(Map<String, Object> d, String projectPath) {
+        return parseDecision(d, projectPath, Decision.Source.SESSION);
+    }
+
+    static Decision parseDecision(Map<String, Object> d, String projectPath, Decision.Source source) {
         return new Decision(
                 str(d.get("id")),
                 str(d.get("type")),
@@ -354,7 +369,8 @@ public class DecisionScanner {
                 str(d.get("learned")),
                 str(d.get("updated")),
                 strList(d.get("tags")),
-                projectPath);
+                projectPath,
+                source);
     }
 
     private static String str(Object o) {

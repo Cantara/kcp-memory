@@ -217,4 +217,59 @@ class DecisionScannerTest {
         Path plain = Files.createDirectories(tmp.resolve("plain/sub"));
         assertNull(DecisionScanner.findDecisionRoot(plain));
     }
+
+    // ---- source (#97): how a project was found decides whether its text is verified
+
+    @Test
+    void projectFoundOnlyThroughASessionIsMarkedSession() throws Exception {
+        Path proj = project("proj-s1", DECISIONS_YAML);
+        sessionIn(proj, "sess-s1");
+
+        scanner().scan();
+
+        List<Decision> hits = store.search("burner api key", 10);
+        assertEquals(1, hits.size());
+        assertEquals(Decision.Source.SESSION, hits.get(0).source());
+        assertFalse(hits.get(0).source().verified());
+    }
+
+    @Test
+    void projectFromTheConfiguredListIsMarkedConfigured() throws Exception {
+        Path proj = project("proj-s2", DECISIONS_YAML);
+
+        new DecisionScanner(List.of(claudeProjects), List.of(proj), db).scan();
+
+        assertEquals(Decision.Source.CONFIGURED, store.search("burner api key", 10).get(0).source());
+    }
+
+    @Test
+    void projectReachedBothWaysCountsAsConfigured() throws Exception {
+        Path proj = project("proj-s3", DECISIONS_YAML);
+        sessionIn(Files.createDirectories(proj.resolve("java/src")), "sess-s3");   // cwd is a subdirectory
+
+        new DecisionScanner(List.of(claudeProjects), List.of(proj), db).scan();
+
+        assertEquals(2, store.count());
+        assertTrue(store.filter(null, null, 10).stream().allMatch(d -> d.source() == Decision.Source.CONFIGURED));
+    }
+
+    @Test
+    void sourceIsRecomputedWhenAProjectIsConfiguredLater() throws Exception {
+        Path proj = project("proj-s4", DECISIONS_YAML);
+        sessionIn(proj, "sess-s4");
+        scanner().scan();
+        assertEquals(Decision.Source.SESSION, store.search("burner api key", 10).get(0).source());
+
+        new DecisionScanner(List.of(claudeProjects), List.of(proj), db).scan();
+
+        assertEquals(Decision.Source.CONFIGURED, store.search("burner api key", 10).get(0).source());
+        assertEquals(2, store.count());   // relabelled in place, not duplicated
+    }
+
+    @Test
+    void parseDecisionWithoutASourceIsUnverified() {
+        Decision d = DecisionScanner.parseDecision(Map.of(
+                "id", "x", "type", "decision", "domain", "d", "what", "w", "why", "y", "learned", "l"), "/p");
+        assertEquals(Decision.Source.SESSION, d.source());
+    }
 }

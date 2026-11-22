@@ -105,4 +105,58 @@ class DecisionStoreTest {
         assertEquals(main.toString(),
                 store.searchCollapsed("lambda", null, null, 10).get(0).decision().projectPath());
     }
+
+    // ---- source (#97)
+
+    private static Decision from(String id, String what, String project, Decision.Source source) {
+        return new Decision(id, "anti-pattern", "deployment", what, "Inline code has a 4KB limit.",
+                List.of(), "session-abc", null, List.of("lambda"), project, source);
+    }
+
+    @Test
+    void aDecisionWithoutASourceIsUnverified() {
+        assertEquals(Decision.Source.SESSION, decision("a", "Lambda rule", "/src/a").source());
+        assertEquals(Decision.Source.SESSION, Decision.Source.fromValue(null));
+        assertEquals(Decision.Source.SESSION, Decision.Source.fromValue("anything else"));
+        assertEquals(Decision.Source.CONFIGURED, Decision.Source.fromValue("configured"));
+    }
+
+    @Test
+    void sourceIsStoredAndUpdatedOnConflict() throws Exception {
+        store.upsert(from("lambda-inline", "Lambda rule", "/src/a", Decision.Source.SESSION));
+        assertEquals(Decision.Source.SESSION, store.getById("lambda-inline").source());
+
+        store.upsert(from("lambda-inline", "Lambda rule", "/src/a", Decision.Source.CONFIGURED));
+
+        assertEquals(1, store.count());
+        assertEquals(Decision.Source.CONFIGURED, store.getById("lambda-inline").source());
+    }
+
+    @Test
+    void aRowWrittenBeforeTheMigrationReadsAsUnverified() throws Exception {
+        try (var st = db.getConnection().createStatement()) {
+            st.executeUpdate("INSERT INTO decisions (decision_id, type, domain, what, why, learned, project_path, file_path, scanned_at) "
+                    + "VALUES ('old','decision','x','Old record','Written without a source','l','/src/old','/src/old/.sdd/decisions/index.yaml', datetime('now'))");
+        }
+        assertEquals(Decision.Source.SESSION, store.filter(null, null, 10).get(0).source());
+    }
+
+    @Test
+    void aHitIsConfiguredWhenAnyIdenticalCopyIsConfigured() throws Exception {
+        store.upsert(from("lambda-inline", "Lambda rule", "/src/clone-1", Decision.Source.SESSION));
+        store.upsert(from("lambda-inline", "Lambda rule", "/src/clone-2", Decision.Source.CONFIGURED));
+
+        List<DecisionStore.DecisionHit> hits = store.searchCollapsed("lambda", null, null, 10);
+
+        assertEquals(1, hits.size());
+        assertEquals(Decision.Source.CONFIGURED, hits.get(0).source());
+    }
+
+    @Test
+    void aHitStaysUnverifiedWhenEveryCopyIsSessionDiscovered() throws Exception {
+        store.upsert(from("lambda-inline", "Lambda rule", "/src/clone-1", Decision.Source.SESSION));
+        store.upsert(from("lambda-inline", "Lambda rule", "/src/clone-2", Decision.Source.SESSION));
+
+        assertEquals(Decision.Source.SESSION, store.searchCollapsed("lambda", null, null, 10).get(0).source());
+    }
 }

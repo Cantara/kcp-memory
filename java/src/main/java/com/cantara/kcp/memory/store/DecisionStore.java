@@ -28,6 +28,21 @@ public class DecisionStore {
         this.conn = db.getConnection();
     }
 
+    private Decision mapRow(ResultSet rs) throws SQLException {
+        return new Decision(
+                rs.getString("decision_id"),
+                rs.getString("type"),
+                rs.getString("domain"),
+                rs.getString("what"),
+                rs.getString("why"),
+                fromJsonList(rs.getString("alternatives")),
+                rs.getString("learned"),
+                rs.getString("updated"),
+                fromJsonList(rs.getString("tags")),
+                rs.getString("project_path"),
+                Decision.Source.fromValue(rs.getString("source")));
+    }
+
     /**
      * Insert or update a decision (upsert by decision_id + project_path).
      */
@@ -42,8 +57,8 @@ public class DecisionStore {
         String sql = """
                 INSERT INTO decisions
                   (decision_id, type, domain, what, why, alternatives, learned, updated,
-                   tags, project_path, file_path, scanned_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+                   tags, project_path, file_path, source, scanned_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
                 ON CONFLICT(decision_id, project_path) DO UPDATE SET
                   type         = excluded.type,
                   domain       = excluded.domain,
@@ -54,6 +69,7 @@ public class DecisionStore {
                   updated      = excluded.updated,
                   tags         = excluded.tags,
                   file_path    = excluded.file_path,
+                  source       = excluded.source,
                   scanned_at   = excluded.scanned_at
                 """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -68,6 +84,7 @@ public class DecisionStore {
             ps.setString(9, toJson(d.tags()));
             ps.setString(10, d.projectPath());
             ps.setString(11, filePath);
+            ps.setString(12, d.source().value());
             ps.executeUpdate();
         }
     }
@@ -83,7 +100,7 @@ public class DecisionStore {
     public List<Decision> search(String query, int limit) throws SQLException {
         String sql = """
                 SELECT d.decision_id, d.type, d.domain, d.what, d.why,
-                       d.alternatives, d.learned, d.updated, d.tags, d.project_path
+                       d.alternatives, d.learned, d.updated, d.tags, d.project_path, d.source
                 FROM decisions_fts fts
                 JOIN decisions d ON fts.rowid = d.id
                 WHERE decisions_fts MATCH ?
@@ -96,18 +113,7 @@ public class DecisionStore {
             ps.setInt(2, limit);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    results.add(new Decision(
-                            rs.getString("decision_id"),
-                            rs.getString("type"),
-                            rs.getString("domain"),
-                            rs.getString("what"),
-                            rs.getString("why"),
-                            fromJsonList(rs.getString("alternatives")),
-                            rs.getString("learned"),
-                            rs.getString("updated"),
-                            fromJsonList(rs.getString("tags")),
-                            rs.getString("project_path")
-                    ));
+                    results.add(mapRow(rs));
                 }
             }
         }
@@ -124,7 +130,7 @@ public class DecisionStore {
      */
     public List<Decision> filter(String type, String domain, int limit) throws SQLException {
         StringBuilder sql = new StringBuilder("SELECT decision_id, type, domain, what, why, " +
-                "alternatives, learned, updated, tags, project_path FROM decisions WHERE 1=1");
+                "alternatives, learned, updated, tags, project_path, source FROM decisions WHERE 1=1");
         List<Object> params = new ArrayList<>();
 
         if (type != null && !type.isBlank()) {
@@ -145,18 +151,7 @@ public class DecisionStore {
             }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    results.add(new Decision(
-                            rs.getString("decision_id"),
-                            rs.getString("type"),
-                            rs.getString("domain"),
-                            rs.getString("what"),
-                            rs.getString("why"),
-                            fromJsonList(rs.getString("alternatives")),
-                            rs.getString("learned"),
-                            rs.getString("updated"),
-                            fromJsonList(rs.getString("tags")),
-                            rs.getString("project_path")
-                    ));
+                    results.add(mapRow(rs));
                 }
             }
         }
@@ -173,9 +168,14 @@ public class DecisionStore {
      * @param decision      the representative copy (preferred checkout, see {@link #checkoutRank})
      * @param otherProjects project paths of the other checkouts holding an identical record
      */
-    public record DecisionHit(Decision decision, List<String> otherProjects) {
+    public record DecisionHit(Decision decision, List<String> otherProjects, Decision.Source source) {
         public DecisionHit {
             otherProjects = List.copyOf(otherProjects);
+            source = source == null ? decision.source() : source;
+        }
+
+        public DecisionHit(Decision decision, List<String> otherProjects) {
+            this(decision, otherProjects, decision.source());
         }
     }
 
@@ -227,7 +227,10 @@ public class DecisionStore {
             for (Decision d : sorted.subList(1, sorted.size())) {
                 if (!others.contains(d.projectPath())) others.add(d.projectPath());
             }
-            hits.add(new DecisionHit(sorted.get(0), others));
+            // Identical records from several checkouts: one configured copy is enough to vouch for the hit.
+            Decision.Source source = sorted.stream().map(Decision::source)
+                    .reduce(Decision.Source.SESSION, Decision.Source::stronger);
+            hits.add(new DecisionHit(sorted.get(0), others, source));
         }
         return hits;
     }
@@ -259,7 +262,7 @@ public class DecisionStore {
     public Decision getById(String decisionId) throws SQLException {
         String sql = """
                 SELECT decision_id, type, domain, what, why, alternatives, learned, updated,
-                       tags, project_path
+                       tags, project_path, source
                 FROM decisions WHERE decision_id = ?
                 ORDER BY scanned_at DESC
                 LIMIT 1
@@ -268,18 +271,7 @@ public class DecisionStore {
             ps.setString(1, decisionId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return null;
-                return new Decision(
-                        rs.getString("decision_id"),
-                        rs.getString("type"),
-                        rs.getString("domain"),
-                        rs.getString("what"),
-                        rs.getString("why"),
-                        fromJsonList(rs.getString("alternatives")),
-                        rs.getString("learned"),
-                        rs.getString("updated"),
-                        fromJsonList(rs.getString("tags")),
-                        rs.getString("project_path")
-                );
+                return mapRow(rs);
             }
         }
     }
