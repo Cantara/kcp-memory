@@ -40,12 +40,19 @@ public class UpdateChecker {
         String currentCommands, String latestCommands,
         String currentMemory,   String latestMemory
     ) {
-        public boolean commandsOutdated() { return latestCommands != null && !latestCommands.equals(currentCommands); }
+        /** Never outdated when the installed version is unknown: there is nothing to compare. */
+        public boolean commandsOutdated() {
+            return latestCommands != null && currentCommands != null && !latestCommands.equals(currentCommands);
+        }
         public boolean memoryOutdated()   { return latestMemory   != null && !latestMemory.equals(currentMemory); }
         public boolean anyOutdated()      { return commandsOutdated() || memoryOutdated(); }
     }
 
-    /** Check with 24h rate limit. Uses cached values if within window. */
+    /**
+     * Check with 24h rate limit. Uses cached values if within window.
+     *
+     * @param currentCmd the installed kcp-commands version, or null when it is not installed or unknown
+     */
     public Versions checkIfDue(String currentMem, String currentCmd) {
         try {
             if (Files.exists(CACHE)) {
@@ -128,7 +135,7 @@ public class UpdateChecker {
             Files.createDirectories(KCP_DIR);
             ObjectNode n = mapper.createObjectNode();
             n.put("checkedAt",      Instant.now().toString());
-            n.put("latestCommands", latestCmd);
+            if (latestCmd != null) n.put("latestCommands", latestCmd);
             n.put("latestMemory",   latestMem);
             mapper.writeValue(CACHE.toFile(), n);
         } catch (Exception e) {

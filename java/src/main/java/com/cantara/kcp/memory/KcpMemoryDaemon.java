@@ -12,6 +12,7 @@ import com.cantara.kcp.memory.server.ExternalHttpServer;
 import com.cantara.kcp.memory.server.TcpHttpServer;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.PendingTaskStore;
+import com.cantara.kcp.memory.update.InstalledVersions;
 import com.cantara.kcp.memory.update.UpdateChecker;
 
 import java.nio.file.Path;
@@ -109,7 +110,10 @@ public class KcpMemoryDaemon {
         Thread.ofVirtual().start(() -> {
             try {
                 String currentMem = McpServer.SERVER_VERSION;
-                UpdateChecker.Versions v = new UpdateChecker().checkIfDue(currentMem, currentMem);
+                // The installed kcp-commands version, or null when it is not installed here. It used to be
+                // currentMem, which compared kcp-commands' latest release with kcp-memory's own version (#96).
+                String currentCmd = InstalledVersions.kcpCommands();
+                UpdateChecker.Versions v = new UpdateChecker().checkIfDue(currentMem, currentCmd);
                 if (v.memoryOutdated())
                     LOG.warning("[kcp-memory] Update available: " + currentMem + " → " + v.latestMemory()
                             + "  (run: java -jar ~/.kcp/kcp-memory-daemon.jar update)");
