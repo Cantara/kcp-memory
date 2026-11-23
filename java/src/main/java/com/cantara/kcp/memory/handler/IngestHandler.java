@@ -5,6 +5,7 @@ import com.cantara.kcp.memory.server.EventBroadcaster;
 import com.cantara.kcp.memory.server.TcpExchange;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.ProvenanceFormat;
+import com.cantara.kcp.memory.store.SessionStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -35,10 +36,12 @@ public class IngestHandler extends BaseHandler {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final MemoryDatabase db;
+    private final SessionStore sessionStore;
     private EventBroadcaster broadcaster;
 
     public IngestHandler(MemoryDatabase db) {
         this.db = db;
+        this.sessionStore = new SessionStore(db);
     }
 
     /**
@@ -105,8 +108,8 @@ public class IngestHandler extends BaseHandler {
             try (PreparedStatement ps = db.getConnection().prepareStatement("""
                     INSERT OR IGNORE INTO sessions
                         (session_id, project_dir, first_message, started_at,
-                         turn_count, tool_call_count, scanned_at, source_instance, provenance)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
+                         turn_count, tool_call_count, scanned_at, source_instance, provenance, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
                     """)) {
                 ps.setString(1, sessionId);
                 ps.setString(2, projectDir);
@@ -116,9 +119,13 @@ public class IngestHandler extends BaseHandler {
                 ps.setInt(6, toolCallCount);
                 ps.setString(7, source);
                 ps.setString(8, provenance);
+                ps.setString(9, SessionStore.stamp());
                 inserted = ps.executeUpdate();
             }
             count += inserted;
+            // A session that was already here keeps its row, but its counts grow while the
+            // session runs: raise them to what the sender reports (never lower).
+            if (inserted == 0) sessionStore.raiseCounts(sessionId, turnCount, toolCallCount);
 
             // INSERT OR IGNORE was a no-op for a pre-existing session_id — every other
             // column deliberately stays untouched (matches today's behavior), but backfill

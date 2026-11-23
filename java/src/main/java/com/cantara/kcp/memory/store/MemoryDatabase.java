@@ -94,7 +94,8 @@ public class MemoryDatabase implements AutoCloseable {
                 "/db/V9__decisions.sql",
                 "/db/V10__nav_trajectory.sql",
                 "/db/V11__scan_file_state.sql",
-                "/db/V12__decision_source.sql"}) {
+                "/db/V12__decision_source.sql",
+                "/db/V13__session_updated_at.sql"}) {
 
             String version = resource.substring(resource.lastIndexOf('/') + 1, resource.lastIndexOf('.'));
 
