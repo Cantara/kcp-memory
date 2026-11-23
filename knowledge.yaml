@@ -153,7 +153,7 @@ units:
       capabilities: ["exocortex.peer-setup"]
     content_hash:
       algorithm: sha256
-      value: "98aaa01efeef23e44f44181cb97ceee6a66518e887f464d0a4085c4321b57c89"
+      value: "b39f1fe9a5184f22b4f42527fdd768c050e10affabce8d012782ad7f30cf17ec"
 
   - id: exocortex-debug
     path: .claude/skills/exocortex-debug/SKILL.md
