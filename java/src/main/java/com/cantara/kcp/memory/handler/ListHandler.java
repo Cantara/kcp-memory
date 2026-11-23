@@ -11,8 +11,16 @@ import java.util.Map;
 
 /**
  * GET /sessions[?project=&lt;dir&gt;][&limit=50] — list recent sessions.
+ *
+ * <p>With {@code updated_since} the endpoint is the change feed peer sync pages through
+ * instead: sessions that changed after the cursor, oldest change first, plus a {@code next}
+ * cursor to send as the next {@code updated_since}. An empty value starts from the beginning.
+ * A peer that predates the feed ignores the parameter and returns the newest sessions.
  */
 public class ListHandler extends BaseHandler {
+
+    /** Upper bound for one page of the change feed, whatever the caller asks for. */
+    static final int MAX_FEED_PAGE = 500;
 
     private final SessionStore sessionStore;
 
@@ -33,6 +41,19 @@ public class ListHandler extends BaseHandler {
         catch (NumberFormatException ignored) {}
 
         try {
+            if (params.containsKey("updated_since")) {
+                int pageSize = Math.max(1, Math.min(limit, MAX_FEED_PAGE));
+                String cursor = params.get("updated_since");
+                SessionStore.ChangePage page = sessionStore.changesSince(cursor, pageSize, true);
+                List<SearchResult> changed = page.sessions().stream().map(SessionStore.Changed::session).toList();
+                sendJson(ex, 200, Map.of(
+                        "project", "",
+                        "count", changed.size(),
+                        "sessions", changed,
+                        "next", page.next()
+                ));
+                return;
+            }
             List<SearchResult> sessions = sessionStore.list(projectDir, limit);
             sendJson(ex, 200, Map.of(
                     "project", projectDir != null ? projectDir : "",

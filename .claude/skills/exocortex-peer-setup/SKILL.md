@@ -48,6 +48,17 @@ Key concepts:
 - **SSH tunnels**: Outbound-only, inherits ~/.ssh/config and SSM ProxyCommand
 - **Transitive sync**: Events flow through the hub preserving original source tags
 - **Append-only**: No conflicts — events deduplicated by SHA-256 hash
+- **Sessions sync as summaries**: a peer receives a session's id, project, first message,
+  start time and turn/tool counts. It does not receive tool calls (`tool_usages`: commands,
+  file paths) or the transcript text, so on a peer-synced session `tool_call_count` can be
+  higher than the rows stored for it. That is by design; tool inputs never leave the machine.
+- **Sessions are refreshed, not copied once**: `GET /sessions?updated_since=<cursor>` is a
+  change feed (oldest change first, `next` cursor in the reply, cursor = `updated_at|session_id`
+  from `sessions.updated_at`, V13). Both pull and push page through it, and a session already
+  held by the receiver has its turn/tool counts raised to the sender's (never lowered).
+  Cursors in `peer_cursors` that start with `u1:` belong to the feed; an older cursor is ignored,
+  so the first cycle after upgrading from 0.40.x refreshes every session once. A peer older than
+  this ignores `updated_since`; pull then merges its newest 100 sessions and keeps no cursor.
 
 Relevant files:
 - `peer/SshTunnel.java` — SSH tunnel lifecycle with auto-reconnect

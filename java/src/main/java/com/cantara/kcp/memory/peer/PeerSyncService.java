@@ -3,12 +3,14 @@ package com.cantara.kcp.memory.peer;
 import com.cantara.kcp.memory.store.MemoryDatabase;
 import com.cantara.kcp.memory.store.PeerCursorStore;
 import com.cantara.kcp.memory.store.ProvenanceFormat;
+import com.cantara.kcp.memory.store.SessionStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -114,6 +116,13 @@ public class PeerSyncService {
         // Initial sync after 5s (let tunnel establish), then every 30s
         scheduler.scheduleAtFixedRate(this::syncOnce, 5, SYNC_INTERVAL_SECONDS, TimeUnit.SECONDS);
         LOG.info("Peer sync scheduled every " + SYNC_INTERVAL_SECONDS + "s with " + peerId);
+    }
+
+    /** Test seam: talk to a peer at {@code baseUrl} without a tunnel or the scheduler. */
+    void useForTest(String baseUrl, String peerId) {
+        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        this.baseUrl = baseUrl;
+        this.peerId = peerId;
     }
 
     /** Stop the sync service and close the tunnel. */
@@ -241,80 +250,106 @@ public class PeerSyncService {
 
     // --- PULL: fetch from remote, merge locally ---
 
-    private void pullSessions() throws IOException, InterruptedException, SQLException {
-        String since = cursorStore.getLastSessionTs(peerId);
-        String url = baseUrl + "/sessions?limit=100"
-                + (since != null ? "&since=" + since : "");
+    /**
+     * Cursor values written by the change feed start with this marker. Anything else in the
+     * cursor columns is an older started_at timestamp, which means nothing to the feed: it is
+     * ignored, so the first cycle after an upgrade refreshes every session once.
+     */
+    private static final String FEED_PREFIX = "u1:";
+    private static final int PAGE = 100;
+    /** Bounds one cycle (about 5,000 sessions); the cursor is kept, so the next cycle goes on. */
+    private static final int MAX_PAGES_PER_CYCLE = 50;
 
-        JsonNode response = fetchJson(url);
-        if (response == null) return;
+    private static String feedCursor(String stored) {
+        return stored != null && stored.startsWith(FEED_PREFIX) ? stored.substring(FEED_PREFIX.length()) : "";
+    }
 
-        JsonNode sessions = response.get("sessions");
-        if (sessions == null || !sessions.isArray() || sessions.isEmpty()) return;
+    /**
+     * Pull the sessions that changed on the peer since the stored cursor, a page at a time.
+     * A session is merged when it is new and refreshed when it grew, so a session that was
+     * first seen early in its life catches up to what the peer holds now.
+     */
+    void pullSessions() throws IOException, InterruptedException, SQLException {
+        String cursor = feedCursor(cursorStore.getLastSessionTs(peerId));
+        int merged = 0;
+        for (int page = 0; page < MAX_PAGES_PER_CYCLE; page++) {
+            String url = baseUrl + "/sessions?limit=" + PAGE + "&updated_since="
+                    + URLEncoder.encode(cursor, StandardCharsets.UTF_8);
+            JsonNode response = fetchJson(url);
+            if (response == null) return;
 
-        String latestTs = null;
-        int count = 0;
-
-        for (JsonNode session : sessions) {
-            // Jackson serializes SearchResult as camelCase (getSessionId -> sessionId)
-            String sessionId = session.path("sessionId").asText(
-                    session.path("session_id").asText(null));
-            String startedAt = session.path("startedAt").asText(
-                    session.path("started_at").asText(null));
-            String projectDir = session.path("projectDir").asText(
-                    session.path("project_dir").asText(""));
-            String firstMessage = session.path("firstMessage").asText(
-                    session.path("first_message").asText(""));
-            int turnCount = session.has("turnCount") ? session.path("turnCount").asInt(0)
-                    : session.path("turn_count").asInt(0);
-            int toolCallCount = session.has("toolCallCount") ? session.path("toolCallCount").asInt(0)
-                    : session.path("tool_call_count").asInt(0);
-            // Preserve original source — enables transitive sync
-            String source = session.path("source_instance").asText(peerId);
-            if ("local".equals(source)) source = peerId;
-
-            if (sessionId == null || startedAt == null) continue;
-
-            // Every memory carries provenance (#47) — same distinguishable format the
-            // /ingest/sessions push path uses, so pulled sessions aren't left null.
-            String provenance = ProvenanceFormat.peer(source, projectDir, sessionId);
-
-            int inserted;
-            try (PreparedStatement ps = db.getConnection().prepareStatement("""
-                    INSERT OR IGNORE INTO sessions
-                        (session_id, project_dir, first_message, started_at,
-                         turn_count, tool_call_count, scanned_at, source_instance, provenance)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
-                    """)) {
-                ps.setString(1, sessionId);
-                ps.setString(2, projectDir);
-                ps.setString(3, firstMessage);
-                ps.setString(4, startedAt);
-                ps.setInt(5, turnCount);
-                ps.setInt(6, toolCallCount);
-                ps.setString(7, source);
-                ps.setString(8, provenance);
-                inserted = ps.executeUpdate();
+            JsonNode sessions = response.get("sessions");
+            if (sessions == null || !sessions.isArray() || sessions.isEmpty()) return;
+            for (JsonNode session : sessions) {
+                mergePulledSession(session);
+                merged++;
             }
 
-            if (inserted == 0) {
-                try (PreparedStatement ps = db.getConnection().prepareStatement("""
-                        UPDATE sessions SET provenance = ?
-                        WHERE session_id = ? AND (provenance IS NULL OR provenance = '')
-                        """)) {
-                    ps.setString(1, provenance);
-                    ps.setString(2, sessionId);
-                    ps.executeUpdate();
-                }
-            }
+            String next = response.path("next").asText("");
+            // No "next": the peer predates the change feed and ignored the cursor. It sent its
+            // newest sessions, which are merged above; there is no cursor to keep.
+            if (next.isEmpty()) return;
+            cursor = next;
+            cursorStore.updateSessionCursor(peerId, FEED_PREFIX + cursor);
+            if (sessions.size() < PAGE) break;
+        }
+        LOG.fine("Pulled " + merged + " sessions from " + peerId);
+    }
 
-            latestTs = startedAt;
-            count++;
+    private void mergePulledSession(JsonNode session) throws SQLException {
+        // Jackson serializes SearchResult as camelCase (getSessionId -> sessionId)
+        String sessionId = session.path("sessionId").asText(
+                session.path("session_id").asText(null));
+        String startedAt = session.path("startedAt").asText(
+                session.path("started_at").asText(null));
+        String projectDir = session.path("projectDir").asText(
+                session.path("project_dir").asText(""));
+        String firstMessage = session.path("firstMessage").asText(
+                session.path("first_message").asText(""));
+        int turnCount = session.has("turnCount") ? session.path("turnCount").asInt(0)
+                : session.path("turn_count").asInt(0);
+        int toolCallCount = session.has("toolCallCount") ? session.path("toolCallCount").asInt(0)
+                : session.path("tool_call_count").asInt(0);
+        // Preserve original source — enables transitive sync
+        String source = session.path("source_instance").asText(peerId);
+        if ("local".equals(source)) source = peerId;
+
+        if (sessionId == null || startedAt == null) return;
+
+        // Every memory carries provenance (#47) — same distinguishable format the
+        // /ingest/sessions push path uses, so pulled sessions aren't left null.
+        String provenance = ProvenanceFormat.peer(source, projectDir, sessionId);
+
+        int inserted;
+        try (PreparedStatement ps = db.getConnection().prepareStatement("""
+                INSERT OR IGNORE INTO sessions
+                    (session_id, project_dir, first_message, started_at,
+                     turn_count, tool_call_count, scanned_at, source_instance, provenance, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
+                """)) {
+            ps.setString(1, sessionId);
+            ps.setString(2, projectDir);
+            ps.setString(3, firstMessage);
+            ps.setString(4, startedAt);
+            ps.setInt(5, turnCount);
+            ps.setInt(6, toolCallCount);
+            ps.setString(7, source);
+            ps.setString(8, provenance);
+            ps.setString(9, SessionStore.stamp());
+            inserted = ps.executeUpdate();
         }
 
-        if (latestTs != null) {
-            cursorStore.updateSessionCursor(peerId, latestTs);
-            LOG.fine("Pulled " + count + " sessions from " + peerId);
+        if (inserted == 0) {
+            try (PreparedStatement ps = db.getConnection().prepareStatement("""
+                    UPDATE sessions SET provenance = ?
+                    WHERE session_id = ? AND (provenance IS NULL OR provenance = '')
+                    """)) {
+                ps.setString(1, provenance);
+                ps.setString(2, sessionId);
+                ps.executeUpdate();
+            }
+            // Already here: its counts grow while the session runs. Raise them, never lower.
+            new SessionStore(db).raiseCounts(sessionId, turnCount, toolCallCount);
         }
     }
 
@@ -388,42 +423,42 @@ public class PeerSyncService {
 
     // --- PUSH: send local data to remote ---
 
-    private void pushSessions() throws IOException, InterruptedException, SQLException {
-        String since = cursorStore.getLastPushSessionTs(peerId);
-        String whereClause = since != null ? " WHERE started_at > ?" : "";
+    /**
+     * Push the sessions that changed locally since the stored cursor, a page at a time, so a
+     * session that kept growing after its first push reaches the peer again with its new counts.
+     */
+    void pushSessions() throws IOException, InterruptedException, SQLException {
+        SessionStore sessionStore = new SessionStore(db);
+        String cursor = feedCursor(cursorStore.getLastPushSessionTs(peerId));
+        int pushed = 0;
+        for (int page = 0; page < MAX_PAGES_PER_CYCLE; page++) {
+            SessionStore.ChangePage changes = sessionStore.changesSince(cursor, PAGE, false);
+            if (changes.sessions().isEmpty()) break;
 
-        List<JsonNode> localSessions = new ArrayList<>();
-        try (PreparedStatement ps = db.getConnection().prepareStatement(
-                "SELECT session_id, project_dir, first_message, started_at, " +
-                "turn_count, tool_call_count, source_instance " +
-                "FROM sessions" + whereClause + " ORDER BY started_at ASC LIMIT 100")) {
-            if (since != null) ps.setString(1, since);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    ObjectNode node = JSON.createObjectNode()
-                            .put("session_id", rs.getString("session_id"))
-                            .put("project_dir", rs.getString("project_dir"))
-                            .put("first_message", rs.getString("first_message"))
-                            .put("started_at", rs.getString("started_at"))
-                            .put("turn_count", rs.getInt("turn_count"))
-                            .put("tool_call_count", rs.getInt("tool_call_count"))
-                            .put("source_instance", rs.getString("source_instance"));
-                    localSessions.add(node);
-                }
+            List<JsonNode> localSessions = new ArrayList<>();
+            for (SessionStore.Changed c : changes.sessions()) {
+                var r = c.session();
+                localSessions.add(JSON.createObjectNode()
+                        .put("session_id", r.getSessionId())
+                        .put("project_dir", r.getProjectDir())
+                        .put("first_message", r.getFirstMessage())
+                        .put("started_at", r.getStartedAt())
+                        .put("turn_count", r.getTurnCount())
+                        .put("tool_call_count", r.getToolCallCount())
+                        .put("source_instance", c.sourceInstance()));
             }
+
+            String payload = JSON.writeValueAsString(
+                    JSON.createObjectNode().set("sessions", JSON.valueToTree(localSessions)));
+            HttpResponse<String> response = postJson(baseUrl + "/ingest/sessions", payload);
+            if (response == null) return;   // not delivered: keep the cursor, try again next cycle
+
+            cursor = changes.next();
+            cursorStore.updatePushSessionCursor(peerId, FEED_PREFIX + cursor);
+            pushed += localSessions.size();
+            if (localSessions.size() < PAGE) break;
         }
-
-        if (localSessions.isEmpty()) return;
-
-        String payload = JSON.writeValueAsString(
-                JSON.createObjectNode().set("sessions", JSON.valueToTree(localSessions)));
-
-        HttpResponse<String> response = postJson(baseUrl + "/ingest/sessions", payload);
-        if (response != null && response.statusCode() == 200) {
-            String lastTs = localSessions.get(localSessions.size() - 1).path("started_at").asText();
-            cursorStore.updatePushSessionCursor(peerId, lastTs);
-            LOG.fine("Pushed " + localSessions.size() + " sessions to " + peerId);
-        }
+        if (pushed > 0) LOG.fine("Pushed " + pushed + " sessions to " + peerId);
     }
 
     private void pushEvents() throws IOException, InterruptedException, SQLException {

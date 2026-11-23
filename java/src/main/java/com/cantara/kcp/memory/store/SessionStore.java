@@ -34,8 +34,8 @@ public class SessionStore {
                   (session_id, project_dir, git_branch, slug, model,
                    started_at, ended_at, turn_count, tool_call_count,
                    tool_names, files_json, first_message, all_user_text, scanned_at,
-                   provenance)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   provenance, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(session_id) DO UPDATE SET
                   project_dir     = excluded.project_dir,
                   git_branch      = excluded.git_branch,
@@ -50,7 +50,8 @@ public class SessionStore {
                   first_message   = excluded.first_message,
                   all_user_text   = excluded.all_user_text,
                   scanned_at      = excluded.scanned_at,
-                  provenance      = COALESCE(sessions.provenance, excluded.provenance)
+                  provenance      = COALESCE(sessions.provenance, excluded.provenance),
+                  updated_at      = excluded.updated_at
                 """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1,  s.getSessionId());
@@ -68,8 +69,111 @@ public class SessionStore {
             ps.setString(13, s.getAllUserText());
             ps.setString(14, s.getScannedAt());
             ps.setString(15, provenance);
+            ps.setString(16, stamp());
             ps.executeUpdate();
         }
+    }
+
+    private static final java.time.format.DateTimeFormatter STAMP_FORMAT =
+            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                    .withZone(java.time.ZoneOffset.UTC);
+
+    /**
+     * The canonical form of {@code sessions.updated_at}: ISO-8601 UTC with exactly three
+     * fractional digits ({@link java.time.Instant#toString()} drops them when they are zero),
+     * so plain string comparison orders correctly. SQL writers use
+     * {@code strftime('%Y-%m-%dT%H:%M:%fZ','now')}, which gives the same shape.
+     */
+    public static String stamp() {
+        return STAMP_FORMAT.format(java.time.Instant.now());
+    }
+
+    /**
+     * A session that came from a peer is a summary (turn and tool counts, no tool calls), and
+     * it used to keep the counts it had when it was first seen. Raise the counts to what the
+     * peer reports now. Counts of a session only grow, so the larger value wins: a stale or
+     * echoed copy can never lower them, and a session this machine indexed from its own
+     * transcript keeps its counts unless a peer holds a later version of the same session.
+     * Nothing else on the row changes.
+     *
+     * <p>There is deliberately no check on {@code source_instance}: a sender labels its own
+     * sessions {@code 'local'}, so on the receiving side those rows would look local too.
+     *
+     * @return true if the row changed
+     */
+    public boolean raiseCounts(String sessionId, int turnCount, int toolCallCount) throws SQLException {
+        String sql = """
+                UPDATE sessions
+                   SET turn_count      = MAX(turn_count, ?1),
+                       tool_call_count = MAX(tool_call_count, ?2),
+                       updated_at      = ?4
+                 WHERE session_id = ?3
+                   AND (turn_count < ?1 OR tool_call_count < ?2)
+                """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, turnCount);
+            ps.setInt(2, toolCallCount);
+            ps.setString(3, sessionId);
+            ps.setString(4, stamp());
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    /** One session in the change feed, with the origin tag the push payload carries. */
+    public record Changed(SearchResult session, String sourceInstance) {}
+
+    /**
+     * A page of the change feed. {@code next} is the cursor to resume after the last row
+     * of this page, or the cursor that was passed in when the page is empty.
+     */
+    public record ChangePage(List<Changed> sessions, String next) {}
+
+    /**
+     * Sessions that changed after {@code cursor}, oldest change first, for peer sync.
+     * A cursor is {@code <updated_at>|<session_id>}; null or blank starts from the beginning.
+     * Ordering and paging use (updated_at, session_id), so rows that were written within the
+     * same millisecond are neither skipped nor repeated at a page boundary. A row that
+     * changes again reappears later in the feed, so a consumer sees every change at least once;
+     * the one gap is a second change to a row within the same millisecond as the page that
+     * already carried it, which the next change to that row closes.
+     *
+     * @param recallGate true to skip expired and forgotten memories, as {@link #list} does
+     */
+    public ChangePage changesSince(String cursor, int limit, boolean recallGate) throws SQLException {
+        String after = "";
+        String afterId = "";
+        boolean hasCursor = cursor != null && !cursor.isBlank();
+        if (hasCursor) {
+            int bar = cursor.indexOf('|');
+            after = bar < 0 ? cursor : cursor.substring(0, bar);
+            afterId = bar < 0 ? "" : cursor.substring(bar + 1);
+        }
+        String cols = "session_id, project_dir, git_branch, slug, model, started_at, ended_at, "
+                + "turn_count, tool_call_count, first_message, provenance, valid_until, source_instance, "
+                + "COALESCE(updated_at, '') AS upd";
+        // Same test as RECALL_GATE, with a numbered parameter so it can sit beside ?1..?3.
+        String gate = recallGate
+                ? " s.forgotten_at IS NULL AND (s.valid_until IS NULL OR s.valid_until > ?4) AND "
+                : " ";
+        String sql = "SELECT " + cols + " FROM sessions s WHERE" + gate
+                + "(COALESCE(updated_at, '') > ?1 OR (COALESCE(updated_at, '') = ?1 AND session_id > ?2)) "
+                + "ORDER BY upd, session_id LIMIT ?3";
+        List<Changed> out = new ArrayList<>();
+        String next = hasCursor ? cursor : "";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, after);
+            ps.setString(2, afterId);
+            ps.setInt(3, limit);
+            if (recallGate) ps.setString(4, nowIso());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    SearchResult r = mapRow(rs);
+                    out.add(new Changed(r, rs.getString("source_instance")));
+                    next = rs.getString("upd") + "|" + r.getSessionId();
+                }
+            }
+        }
+        return new ChangePage(out, next);
     }
 
     /** Derive a provenance descriptor from a session's own origin. */
@@ -272,24 +376,26 @@ public class SessionStore {
 
     private List<SearchResult> mapResults(ResultSet rs) throws SQLException {
         List<SearchResult> out = new ArrayList<>();
-        while (rs.next()) {
-            SearchResult r = new SearchResult();
-            r.setSessionId(rs.getString("session_id"));
-            r.setProjectDir(rs.getString("project_dir"));
-            r.setGitBranch(rs.getString("git_branch"));
-            r.setSlug(rs.getString("slug"));
-            r.setModel(rs.getString("model"));
-            r.setStartedAt(rs.getString("started_at"));
-            r.setEndedAt(rs.getString("ended_at"));
-            r.setTurnCount(rs.getInt("turn_count"));
-            r.setToolCallCount(rs.getInt("tool_call_count"));
-            r.setFirstMessage(rs.getString("first_message"));
-            r.setProvenance(rs.getString("provenance"));
-            r.setValidUntil(rs.getString("valid_until"));
-            try { r.setRank(rs.getDouble("rank")); } catch (SQLException ignored) {}
-            out.add(r);
-        }
+        while (rs.next()) out.add(mapRow(rs));
         return out;
+    }
+
+    private SearchResult mapRow(ResultSet rs) throws SQLException {
+        SearchResult r = new SearchResult();
+        r.setSessionId(rs.getString("session_id"));
+        r.setProjectDir(rs.getString("project_dir"));
+        r.setGitBranch(rs.getString("git_branch"));
+        r.setSlug(rs.getString("slug"));
+        r.setModel(rs.getString("model"));
+        r.setStartedAt(rs.getString("started_at"));
+        r.setEndedAt(rs.getString("ended_at"));
+        r.setTurnCount(rs.getInt("turn_count"));
+        r.setToolCallCount(rs.getInt("tool_call_count"));
+        r.setFirstMessage(rs.getString("first_message"));
+        r.setProvenance(rs.getString("provenance"));
+        r.setValidUntil(rs.getString("valid_until"));
+        try { r.setRank(rs.getDouble("rank")); } catch (SQLException ignored) {}
+        return r;
     }
 
     private String toJson(Object obj) {
