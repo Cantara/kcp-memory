@@ -480,6 +480,14 @@ public class SessionParser {
             session.setStartedAt(startedAt);
             session.setEndedAt(endedAt);
             session.setTurnCount(turnCount);
+            // A file is indexed as ONE session (the last id it carries), and its tool usages
+            // are deleted and re-inserted under that id. A resumed Claude Code session starts
+            // with the lines of the session it was resumed from, which carry the earlier id.
+            // Stamping each usage with the id of its own line left rows under another
+            // session: never deleted on re-index (copies piled up), counted in
+            // tool_call_count but not stored for the session, and a foreign key violation
+            // when that other session was not indexed (#85).
+            for (ToolUsage usage : usages) usage.setSessionId(sessionId);
             session.setToolCallCount(usages.size());
             session.setToolNames(new ArrayList<>(toolNames));
             session.setFiles(new ArrayList<>(files));
