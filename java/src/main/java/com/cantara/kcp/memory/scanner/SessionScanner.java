@@ -15,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.LongSupplier;
 import java.util.logging.Logger;
 
 /**
@@ -39,6 +40,8 @@ public class SessionScanner {
     private final SessionStore sessionStore;
     private final ToolUsageStore toolUsageStore;
     private final ScanFileStateStore fileState;
+    private final ReparseThrottle throttle;
+    private final LongSupplier clock;
 
     public SessionScanner(MemoryDatabase db) {
         this(List.of(DEFAULT_CLAUDE_PROJECTS, DEFAULT_GEMINI_TMP, DEFAULT_CODEX_SESSIONS, DEFAULT_PI_SESSIONS), db);
@@ -54,8 +57,16 @@ public class SessionScanner {
 
     /** Test seam: lets a test observe how many files a scan actually parses. */
     SessionScanner(List<Path> roots, MemoryDatabase db, SessionParser parser) {
+        this(roots, db, parser, ReparseThrottle.fromEnvironment(), System::currentTimeMillis);
+    }
+
+    /** Test seam: the re-parse throttle and the clock it reads (#105). */
+    SessionScanner(List<Path> roots, MemoryDatabase db, SessionParser parser,
+                   ReparseThrottle throttle, LongSupplier clock) {
         this.roots = List.copyOf(roots);
         this.parser = parser;
+        this.throttle = throttle;
+        this.clock = clock;
         this.sessionStore = new SessionStore(db);
         this.toolUsageStore = new ToolUsageStore(db);
         this.fileState = new ScanFileStateStore(db);
@@ -85,12 +96,13 @@ public class SessionScanner {
         List<String> errors = new ArrayList<>();
         int[] counts = new int[3]; // indexed, skipped, parsed
         long[] bytesParsed = new long[1];
+        long[] deferral = new long[2]; // deferred file count, shortest wait in ms
 
         try {
             List<Path> sessionFiles = collectSessionFiles();
             for (Path file : sessionFiles) {
                 try {
-                    boolean wasIndexed = indexFile(file, force, counts, bytesParsed);
+                    boolean wasIndexed = indexFile(file, force, counts, bytesParsed, deferral);
                     if (wasIndexed) counts[0]++; else counts[1]++;
                 } catch (Exception e) {
                     errors.add(file + ": " + e.getMessage());
@@ -102,12 +114,12 @@ public class SessionScanner {
 
         long millis = (System.nanoTime() - startNanos) / 1_000_000;
         // Keep the original "Scan complete: N indexed, N skipped, N errors" prefix: people grep for it.
-        LOG.info(String.format("Scan complete: %d indexed, %d skipped, %d errors; %d files parsed (%d bytes), %d ms",
-                counts[0], counts[1], errors.size(), counts[2], bytesParsed[0], millis));
-        return new ScanResult(counts[0], counts[1], errors.size(), errors, counts[2]);
+        LOG.info(String.format("Scan complete: %d indexed, %d skipped, %d errors; %d files parsed (%d bytes), %d deferred, %d ms",
+                counts[0], counts[1], errors.size(), counts[2], bytesParsed[0], deferral[0], millis));
+        return new ScanResult(counts[0], counts[1], errors.size(), errors, counts[2], (int) deferral[0], deferral[1]);
     }
 
-    private boolean indexFile(Path file, boolean force, int[] counts, long[] bytesParsed)
+    private boolean indexFile(Path file, boolean force, int[] counts, long[] bytesParsed, long[] deferral)
             throws IOException, SQLException {
         // #88: decide "unchanged" from size/mtime BEFORE reading the file. The stamp is
         // taken before the parse, so a file that grows during the parse is seen as
@@ -118,11 +130,25 @@ public class SessionScanner {
             return false;
         }
 
+        // #105: a changed file is parsed from the start. Leave a large one for a later
+        // scan if it was parsed too recently for its size. Its recorded stamp is left as
+        // it is, so the next scan still sees it as changed.
+        long nowMs = clock.getAsLong();
+        if (!force && previous != null && previous.recordedAtMs() > 0) {
+            long wait = previous.recordedAtMs() + throttle.intervalMs(stamp.sizeBytes()) - nowMs;
+            if (wait > 0) {
+                deferral[1] = deferral[0] == 0 ? wait : Math.min(deferral[1], wait);
+                deferral[0]++;
+                return false;
+            }
+        }
+        Instant parsedAt = Instant.ofEpochMilli(nowMs);
+
         counts[2]++;
         bytesParsed[0] += stamp.sizeBytes();
         Optional<SessionParser.ParseResult> result = parser.parse(file, deriveSlug(file));
         if (result.isEmpty()) {
-            fileState.record(ScanFileStateStore.SCANNER_SESSION, file, "", stamp);
+            fileState.record(ScanFileStateStore.SCANNER_SESSION, file, "", stamp, parsedAt);
             return false;
         }
 
@@ -134,7 +160,7 @@ public class SessionScanner {
         // a file appended while it was being parsed gets an mtime just before the
         // scanned_at that the parse then writes, and must still be re-indexed.
         if (!force && previous == null && isCurrent(file, sessionId)) {
-            fileState.record(ScanFileStateStore.SCANNER_SESSION, file, sessionId, stamp);
+            fileState.record(ScanFileStateStore.SCANNER_SESSION, file, sessionId, stamp, parsedAt);
             return false;
         }
 
@@ -142,7 +168,7 @@ public class SessionScanner {
         sessionStore.upsert(pr.session());
         toolUsageStore.deleteForSession(sessionId);
         toolUsageStore.insertBatch(pr.toolUsages());
-        fileState.record(ScanFileStateStore.SCANNER_SESSION, file, sessionId, stamp);
+        fileState.record(ScanFileStateStore.SCANNER_SESSION, file, sessionId, stamp, parsedAt);
         return true;
     }
 
@@ -231,10 +257,19 @@ public class SessionScanner {
     }
 
     /**
-     * @param parsed how many files were actually opened and parsed; files whose size and
-     *               mtime matched the last parse are skipped without being read (#88)
+     * @param parsed       how many files were actually opened and parsed; files whose size and
+     *                     mtime matched the last parse are skipped without being read (#88)
+     * @param deferred     how many changed files were left for a later scan because they
+     *                     were parsed too recently for their size (#105); counted in skipped
+     * @param retryAfterMs how long until the first deferred file is due, 0 if none
      */
-    public record ScanResult(int indexed, int skipped, int errors, List<String> errorMessages, int parsed) {
+    public record ScanResult(int indexed, int skipped, int errors, List<String> errorMessages, int parsed,
+                             int deferred, long retryAfterMs) {
+        /** Pre-#105 shape, kept for source compatibility. */
+        public ScanResult(int indexed, int skipped, int errors, List<String> errorMessages, int parsed) {
+            this(indexed, skipped, errors, errorMessages, parsed, 0, 0);
+        }
+
         /** Pre-#88 shape, kept for source compatibility. */
         public ScanResult(int indexed, int skipped, int errors, List<String> errorMessages) {
             this(indexed, skipped, errors, errorMessages, 0);

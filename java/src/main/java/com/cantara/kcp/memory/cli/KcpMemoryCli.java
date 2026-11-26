@@ -298,6 +298,10 @@ public class KcpMemoryCli implements Callable<Integer> {
                 SessionScanner.ScanResult result = scanner.scan(force);
                 System.out.printf("[kcp-memory] sessions: %d indexed, %d skipped, %d errors%n",
                         result.indexed(), result.skipped(), result.errors());
+                if (result.deferred() > 0) {
+                    System.out.printf("[kcp-memory] %d large changed file(s) left for a later scan (parsed recently, due in %d s); use --force to index now%n",
+                            result.deferred(), (result.retryAfterMs() + 999) / 1000);
+                }
                 if (result.hasErrors()) {
                     result.errorMessages().forEach(e -> System.err.println("  ERROR: " + e));
                 }

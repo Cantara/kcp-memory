@@ -71,7 +71,7 @@ units:
       ]
     content_hash:
       algorithm: sha256
-      value: "6a1905100379bbc3d949c1b31d1b18ce2a9841521bbc6735627b4f106541bf05"
+      value: "9895da60e0f975f031bb2d0ee9114c0dfb3621a86b3a74ffba55344f7e282d44"
 
   - id: mcp-tools
     path: README.md
@@ -98,7 +98,7 @@ units:
       ]
     content_hash:
       algorithm: sha256
-      value: "6a1905100379bbc3d949c1b31d1b18ce2a9841521bbc6735627b4f106541bf05"
+      value: "9895da60e0f975f031bb2d0ee9114c0dfb3621a86b3a74ffba55344f7e282d44"
 
   - id: three-layer-model
     path: README.md
@@ -119,7 +119,7 @@ units:
       ]
     content_hash:
       algorithm: sha256
-      value: "6a1905100379bbc3d949c1b31d1b18ce2a9841521bbc6735627b4f106541bf05"
+      value: "9895da60e0f975f031bb2d0ee9114c0dfb3621a86b3a74ffba55344f7e282d44"
 
   # The procedural plane (§4.3a, RFC-0028): kcp-memory's four operational skills declared
   # as governed procedures. Tool names are Claude Code's — the runtime that adjudicates

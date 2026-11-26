@@ -424,6 +424,13 @@ For near-real-time session indexing, add to `~/.claude/settings.json`:
 Fires after every tool call, triggers an async POST to `/scan`. Never blocks — if the
 daemon is not running the hook exits silently in under 1 second.
 
+A changed transcript is parsed from the start, so a large one is not re-parsed on every
+scan. A file of 16 MB or more is re-parsed at most once per interval: one second per 8 MB,
+capped at 60 seconds. A scan that leaves such a file for later logs it as `deferred`, and
+the daemon scans again when the file is due, so the index is at most one interval behind.
+`scan --force` and `/scan?force=true` ignore the interval. Set
+`KCP_MEMORY_REPARSE_THROTTLE=off` to re-parse on every scan as before.
+
 ---
 
 ## Daemon management

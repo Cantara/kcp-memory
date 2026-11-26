@@ -28,7 +28,8 @@ public class ScanFileStateStore {
         }
     }
 
-    public record Entry(String entityId, FileStamp stamp) {}
+    /** @param recordedAtMs when the file was last parsed (epoch ms), 0 if unknown */
+    public record Entry(String entityId, FileStamp stamp, long recordedAtMs) {}
 
     private final Connection conn;
 
@@ -38,19 +39,25 @@ public class ScanFileStateStore {
 
     /** The recorded state for {@code file} under {@code scanner}, or null if none. */
     public Entry get(String scanner, Path file) throws SQLException {
-        String sql = "SELECT entity_id, size_bytes, mtime_ms FROM scan_file_state WHERE path = ? AND scanner = ?";
+        String sql = "SELECT entity_id, size_bytes, mtime_ms, recorded_at FROM scan_file_state WHERE path = ? AND scanner = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, key(file));
             ps.setString(2, scanner);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return null;
-                return new Entry(rs.getString(1), new FileStamp(rs.getLong(2), rs.getLong(3)));
+                return new Entry(rs.getString(1), new FileStamp(rs.getLong(2), rs.getLong(3)), parseMs(rs.getString(4)));
             }
         }
     }
 
     /** Record that {@code file}, with the given stamp, has been parsed into {@code entityId}. */
     public void record(String scanner, Path file, String entityId, FileStamp stamp) throws SQLException {
+        record(scanner, file, entityId, stamp, Instant.now());
+    }
+
+    /** As {@link #record(String, Path, String, FileStamp)}, with the parse time given by the caller. */
+    public void record(String scanner, Path file, String entityId, FileStamp stamp, Instant recordedAt)
+            throws SQLException {
         String sql = """
                 INSERT INTO scan_file_state (path, scanner, entity_id, size_bytes, mtime_ms, recorded_at)
                 VALUES (?,?,?,?,?,?)
@@ -66,8 +73,16 @@ public class ScanFileStateStore {
             ps.setString(3, entityId != null ? entityId : "");
             ps.setLong(4, stamp.sizeBytes());
             ps.setLong(5, stamp.mtimeMs());
-            ps.setString(6, Instant.now().toString());
+            ps.setString(6, recordedAt.toString());
             ps.executeUpdate();
+        }
+    }
+
+    private static long parseMs(String instant) {
+        try {
+            return instant == null ? 0 : Instant.parse(instant).toEpochMilli();
+        } catch (RuntimeException e) {
+            return 0;
         }
     }
 
