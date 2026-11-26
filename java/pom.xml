@@ -120,6 +120,28 @@
                 </configuration>
             </plugin>
 
+            <!-- JaCoCo: coverage report only (target/site/jacoco), no threshold -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.14</version>
+                <executions>
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
             <!-- Shade plugin: fat JAR -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
